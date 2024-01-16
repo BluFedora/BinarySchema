@@ -22,6 +22,10 @@
 #include <algorithm>  // equal
 #include <cstring>    // memcmp, memcpy
 
+#if BINARY_SCHEMA_BUILD_VALIDATION
+#include <cstdio>  // printf
+#endif
+
 #if defined(__GNUC__) || defined(__clang__) || defined(__INTEL_LLVM_COMPILER) || defined(__INTEL_COMPILER)
 #define unreachable() __builtin_unreachable()
 #elif defined(_MSC_VER)
@@ -61,6 +65,24 @@ namespace BinarySchema
     return !(flags & TypeConstructorFlags::FixedSize) && !ByteCodeHasSmallSize(flags);
   }
 
+#if BINARY_SCHEMA_BUILD_VALIDATION
+#define BINARY_SCHEMA_VERIFY_PRINT(expr, ...) BINARY_SCHEMA_VERIFY_PRINT_((expr), #expr)
+
+  static bool BINARY_SCHEMA_VERIFY_PRINT_(const bool condition, const char* const condition_str)
+  {
+    if (condition)
+    {
+      std::printf("[BinarySchema] Verify failure: %s\n", condition_str);
+    }
+
+    return condition;
+  }
+
+#else
+#define BINARY_SCHEMA_VERIFY_PRINT(...)
+#define BINARY_SCHEMA_VERIFY_PRINT2(...)
+#endif
+
   static inline bool ByteCodeIsConvertCompatible(
    const TypeByteCode* const src,
    const std::uint32_t       num_src_bytes,
@@ -80,7 +102,7 @@ namespace BinarySchema
         std::memcpy(&src_hash_str, src + src_byte_code_index, sizeof(src_hash_str));
         std::memcpy(&dst_hash_str, dst + dst_byte_code_index, sizeof(dst_hash_str));
 
-        if (src_hash_str != dst_hash_str)
+        if (BINARY_SCHEMA_VERIFY_PRINT(src_hash_str != dst_hash_str))
         {
           return false;
         }
@@ -90,7 +112,12 @@ namespace BinarySchema
       dst_byte_code_index += sizeof(std::uint32_t) * !ByteCodeHasSmallSize(dst_flags);
     }
 
-    return src_byte_code_index == num_src_bytes && dst_byte_code_index == num_dst_bytes;
+    if (BINARY_SCHEMA_VERIFY_PRINT(src_byte_code_index != num_src_bytes) || BINARY_SCHEMA_VERIFY_PRINT(dst_byte_code_index != num_dst_bytes))
+    {
+      return false;
+    }
+
+    return true;
   }
 
   //
@@ -99,8 +126,20 @@ namespace BinarySchema
 
   static bool VerifyPointer(const void* const pointer, const unsigned char* const data_block, const std::uint64_t data_block_size)
   {
-    return reinterpret_cast<const unsigned char*>(pointer) > data_block &&
-           reinterpret_cast<const unsigned char*>(pointer) <= (data_block + data_block_size);
+    if (pointer != nullptr)
+    {
+      if (BINARY_SCHEMA_VERIFY_PRINT(reinterpret_cast<const unsigned char*>(pointer) < data_block))
+      {
+        return false;
+      }
+
+      if (BINARY_SCHEMA_VERIFY_PRINT(reinterpret_cast<const unsigned char*>(pointer) > (data_block + data_block_size)))
+      {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   template<typename offset_type_t, typename T, typename alignment_type_t>
@@ -132,7 +171,7 @@ namespace BinarySchema
 
       if (!ByteCodeHasSmallSize(flags))
       {
-        if ((byte_code_ptr + sizeof(std::uint32_t)) > byte_code_end)
+        if (BINARY_SCHEMA_VERIFY_PRINT((byte_code_ptr + sizeof(std::uint32_t)) > byte_code_end))
         {
           return false;
         }
@@ -145,13 +184,13 @@ namespace BinarySchema
 
           const StructureMember* const dynamic_val = type.FindMember(member_hash_str);
 
-          if (!dynamic_val->base_type)
+          if (BINARY_SCHEMA_VERIFY_PRINT(!dynamic_val->base_type))
           {
             return false;
           }
 
           // The dynamic size must exist and be an unqualified integer type.
-          if (!dynamic_val || !dynamic_val->base_type->IsIntScalar() || dynamic_val->HasQualifiers())
+          if (BINARY_SCHEMA_VERIFY_PRINT(!dynamic_val || !dynamic_val->base_type->IsIntScalar() || dynamic_val->HasQualifiers()))
           {
             binaryIOAssert(dynamic_val, "Failed to find dynamic member.");
             binaryIOAssert(dynamic_val->base_type->IsIntScalar() && !dynamic_val->HasQualifiers(), "Dynamic member must be an unqualified integer type.");
@@ -201,12 +240,12 @@ namespace BinarySchema
 
   static bool VerifySchema(const Schema& schema)
   {
-    return schema.header.type_id == SchemaHeader::ChunkID &&
-           VerifySchemaTypes(
-            schema.Types(),
-            schema.header.num_types,
-            schema.data_bytes.get(),
-            schema.header.data_size);
+    if (BINARY_SCHEMA_VERIFY_PRINT(schema.header.type_id != SchemaHeader::ChunkID))
+    {
+      return false;
+    }
+
+    return VerifySchemaTypes(schema.Types(), schema.header.num_types, schema.data_bytes.get(), schema.header.data_size);
   }
 
   //
@@ -617,6 +656,7 @@ namespace BinarySchema
       const std::uint32_t num_types = m_NumTypes;
 
       Schema schema{};
+      schema.header.type_id   = SchemaHeader::ChunkID;
       schema.header.data_size = memory_requirements.size;
       schema.header.num_types = num_types;
       schema.header.flags     = end_token.schema_flags;
