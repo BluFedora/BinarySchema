@@ -727,12 +727,8 @@ namespace BinarySchema
 
 #if BINARY_SCHEMA_BUILD_VALIDATION
       if (VerifySchema(schema))
-      {
-        return schema;
-      }
-#else
-      return schema;
 #endif
+        return schema;
     }
 
     return std::nullopt;
