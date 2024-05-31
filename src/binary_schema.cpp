@@ -72,7 +72,7 @@ namespace BinarySchema
   {
     if (condition)
     {
-      std::printf("[BinarySchema] Verify failure: %s\n", condition_str);
+      std::fprintf(stderr, "[BinarySchema] Verify failure: %s\n", condition_str);
     }
 
     return condition;
@@ -80,7 +80,6 @@ namespace BinarySchema
 
 #else
 #define BINARY_SCHEMA_VERIFY_PRINT(...)
-#define BINARY_SCHEMA_VERIFY_PRINT2(...)
 #endif
 
   static inline bool ByteCodeIsConvertCompatible(
@@ -182,17 +181,17 @@ namespace BinarySchema
           HashStr32 member_hash_str;
           std::memcpy(&member_hash_str, byte_code_ptr, sizeof(member_hash_str));
 
+          // The dynamic size must exist and be an unqualified integer type.
           const StructureMember* const dynamic_val = type.FindMember(member_hash_str);
+          binaryIOAssert(dynamic_val, "Failed to find dynamic member.");
 
           if (BINARY_SCHEMA_VERIFY_PRINT(!dynamic_val->base_type))
           {
             return false;
           }
 
-          // The dynamic size must exist and be an unqualified integer type.
           if (BINARY_SCHEMA_VERIFY_PRINT(!dynamic_val || !dynamic_val->base_type->IsIntScalar() || dynamic_val->HasQualifiers()))
           {
-            binaryIOAssert(dynamic_val, "Failed to find dynamic member.");
             binaryIOAssert(dynamic_val->base_type->IsIntScalar() && !dynamic_val->HasQualifiers(), "Dynamic member must be an unqualified integer type.");
 
             return false;
