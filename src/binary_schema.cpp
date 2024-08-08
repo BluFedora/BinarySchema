@@ -141,8 +141,8 @@ namespace BinarySchema
     return true;
   }
 
-  template<typename offset_type_t, typename T, typename alignment_type_t>
-  static bool VerifyRelPointer(const assetio::rel_ptr<offset_type_t, T, alignment_type_t>& pointer, const unsigned char* const data_block, const std::uint64_t data_block_size)
+  template<typename offset_type_t, typename T, std::uint8_t alignment>
+  static bool VerifyRelPointer(const assetio::rel_ptr<offset_type_t, T, alignment>& pointer, const unsigned char* const data_block, const std::uint64_t data_block_size)
   {
     return VerifyPointer(pointer.get(), data_block, data_block_size);
   }
