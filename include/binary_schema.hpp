@@ -149,7 +149,7 @@ namespace BinarySchema
     assetio::rel_ptr32<const struct SchemaType> base_type;
     HashStr32                                   base_type_name;
     assetio::rel_array32<TypeByteCode>          type_ctors;
-    SizeType                                    offset;  // TODO(SR): Check if a full 64bit bits is overkill.
+    SizeType                                    offset;
 
     StructureMember()                           = default;
     StructureMember(const StructureMember& rhs) = delete;
@@ -177,6 +177,8 @@ namespace BinarySchema
     return std::uint32_t(lhs) & std::uint32_t(rhs);
   }
 
+  // TODO(SR): Downgrade `m_Flags` and `m_Alignment` to 16bit.
+  // TODO(SR): Downgrade `m_Size` to 32bit.
   struct SchemaType
   {
     HashStr32                       m_Name;

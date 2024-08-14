@@ -239,12 +239,19 @@ namespace BinarySchema
 
   static bool VerifySchema(const Schema& schema)
   {
-    if (BINARY_SCHEMA_VERIFY_PRINT(schema.header.type_id != SchemaHeader::ChunkID))
+    const SchemaHeader& header = schema.header;
+
+    if (BINARY_SCHEMA_VERIFY_PRINT(header.type_id != SchemaHeader::ChunkID))
     {
       return false;
     }
 
-    return VerifySchemaTypes(schema.Types(), schema.header.num_types, schema.data_bytes.get(), schema.header.data_size);
+    if (BINARY_SCHEMA_VERIFY_PRINT(header.header_size != sizeof(SchemaHeader)))
+    {
+      return false;
+    }
+
+    return VerifySchemaTypes(schema.Types(), header.num_types, schema.data_bytes.get(), header.data_size);
   }
 
   //
@@ -364,21 +371,18 @@ namespace BinarySchema
   {
     if (buffer_size >= sizeof(SchemaHeader))
     {
-      const SchemaHeader* const header = reinterpret_cast<const SchemaHeader*>(buffer);
+      Schema schema;
+      std::memcpy(&schema.header, buffer, sizeof(SchemaHeader));  // NOTE(SR): Using memcpy rather than a cast since buffer may not be 8 byte aligned.
 
-      if (buffer_size >= (sizeof(SchemaHeader) + header->data_size))
+      if (buffer_size >= (sizeof(SchemaHeader) + schema.header.data_size))
       {
         const unsigned char* const data_start = reinterpret_cast<const unsigned char*>(buffer) + sizeof(SchemaHeader);
 
-        Schema result;
-        result.header     = *header;
-        result.data_bytes = std::shared_ptr<const unsigned char[]>(
-         reinterpret_cast<const unsigned char*>(buffer) + sizeof(SchemaHeader),
-         [](const unsigned char* const ptr) {});
+        schema.data_bytes = std::shared_ptr<const unsigned char[]>(data_start, [](const unsigned char* const ptr) {});
 
-        if (VerifySchema(result))
+        if (VerifySchema(schema))
         {
-          return result;
+          return schema;
         }
       }
     }
