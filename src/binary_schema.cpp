@@ -334,7 +334,7 @@ namespace BinarySchema
     return result;
   }
 
-  std::optional<Schema> Schema::Load(assetio::IByteReader& reader, IAllocator& allocator)
+  std::optional<Schema> Schema::Load(assetio::IByteReader& reader, IPolymorphicAllocator& allocator)
   {
     Schema result;
     if (reader.read(&result.header, sizeof(SchemaHeader)) == assetio::IOResult::Success)
@@ -395,7 +395,7 @@ namespace BinarySchema
   //
 
   template<typename T>
-  T* SchemaBuilderList<T>::Append(IAllocator& memory)
+  T* SchemaBuilderList<T>::Append(const AllocatorView memory)
   {
     T* const result = bfMemAllocateObject<T>(memory);
 
@@ -418,7 +418,7 @@ namespace BinarySchema
   }
 
   template<typename T>
-  void SchemaBuilderList<T>::Free(IAllocator& memory)
+  void SchemaBuilderList<T>::Free(const AllocatorView memory)
   {
     T* cursor = head;
 
@@ -464,7 +464,7 @@ namespace BinarySchema
     return MemberBuilder{m_Allocator, m_Type, *member};
   }
 
-  void SchemaBuilder::Begin(IAllocator& working_memory)
+  void SchemaBuilder::Begin(IPolymorphicAllocator& working_memory)
   {
     ReleaseResources();
     m_NumTypes     = 0u;
@@ -622,7 +622,7 @@ namespace BinarySchema
     return BuildInternal(std::shared_ptr<byte[]>(reinterpret_cast<byte*>(memory), [](unsigned char* const) {}), end_token);
   }
 
-  std::optional<Schema> SchemaBuilder::Build(IAllocator& allocator, const SchemaBuilderEndToken& end_token) const
+  std::optional<Schema> SchemaBuilder::Build(IPolymorphicAllocator& allocator, const SchemaBuilderEndToken& end_token) const
   {
     return BuildInternal(bfMemMakeShared<byte[]>(&allocator, end_token.memory_requirements.size, end_token.memory_requirements.alignment), end_token);
   }
@@ -1005,12 +1005,12 @@ namespace BinarySchema
   namespace ReadInternal
   {
     template<ByteOrder byte_order>
-    static assetio::IOResult ReadUnqualifiedType(assetio::IByteReader& byte_reader, IAllocator& memory, void* const data, const SchemaType& type);
+    static assetio::IOResult ReadUnqualifiedType(assetio::IByteReader& byte_reader, IPolymorphicAllocator& memory, void* const data, const SchemaType& type);
 
     template<ByteOrder byte_order>
     static assetio::IOResult ReadQualifiedType(
      assetio::IByteReader&     byte_reader,
-     IAllocator&               memory,
+     IPolymorphicAllocator&    memory,
      const SchemaType&         parent_type,
      const void* const         parent_object,
      void* const               data,
@@ -1062,7 +1062,7 @@ namespace BinarySchema
     }
 
     template<ByteOrder byte_order>
-    static assetio::IOResult ReadUnqualifiedType(assetio::IByteReader& byte_reader, IAllocator& memory, void* const data, const SchemaType& type)
+    static assetio::IOResult ReadUnqualifiedType(assetio::IByteReader& byte_reader, IPolymorphicAllocator& memory, void* const data, const SchemaType& type)
     {
       assetio::IOResult result = assetio::IOResult::Success;
 
@@ -1124,11 +1124,11 @@ namespace BinarySchema
     }
   }  // namespace ReadInternal
 
-  assetio::IOResult Read(assetio::IByteReader& byte_reader,
-                         IAllocator&           memory,
-                         const SchemaType&     type,
-                         void* const           data,
-                         const ByteOrder       byte_order)
+  assetio::IOResult Read(assetio::IByteReader&  byte_reader,
+                         IPolymorphicAllocator& memory,
+                         const SchemaType&      type,
+                         void* const            data,
+                         const ByteOrder        byte_order)
   {
     // @ByteOrder
     switch (byte_order)
@@ -1140,12 +1140,12 @@ namespace BinarySchema
     }
   }
 
-  assetio::IOResult Read(assetio::IByteReader& byte_reader,
-                         IAllocator&           memory,
-                         const Schema&         schema,
-                         const HashStr32       type_name,
-                         void* const           data,
-                         const ByteOrder       byte_order)
+  assetio::IOResult Read(assetio::IByteReader&  byte_reader,
+                         IPolymorphicAllocator& memory,
+                         const Schema&          schema,
+                         const HashStr32        type_name,
+                         void* const            data,
+                         const ByteOrder        byte_order)
   {
     const SchemaType* const type = schema.FindType(type_name);
 
@@ -1158,11 +1158,11 @@ namespace BinarySchema
 
   namespace ConvertInternal
   {
-    static void ConvertUnqualifiedType(IAllocator&       dst_memory,
-                                       const void* const src_data,
-                                       void* const       dst_data,
-                                       const SchemaType& src_type,
-                                       const SchemaType& dst_type);
+    static void ConvertUnqualifiedType(IPolymorphicAllocator& dst_memory,
+                                       const void* const      src_data,
+                                       void* const            dst_data,
+                                       const SchemaType&      src_type,
+                                       const SchemaType&      dst_type);
 
     static void ConvertQualifiedType(const SchemaType&         src_parent_type,
                                      const void* const         src_parent_object,
@@ -1172,7 +1172,7 @@ namespace BinarySchema
                                      void* const               dst_parent_object,
                                      const SchemaType&         dst_type,
                                      void* const               dst_object,
-                                     IAllocator&               dst_memory,
+                                     IPolymorphicAllocator&    dst_memory,
                                      const TypeByteCode*       type_bytecode,
                                      const TypeByteCode* const type_bytecode_end,
                                      const TypeByteCode*       dst_type_bytecode)
@@ -1255,11 +1255,11 @@ namespace BinarySchema
       }
     }
 
-    static void ConvertUnqualifiedType(IAllocator&       dst_memory,
-                                       const void* const src_data,
-                                       void* const       dst_data,
-                                       const SchemaType& src_type,
-                                       const SchemaType& dst_type)
+    static void ConvertUnqualifiedType(IPolymorphicAllocator& dst_memory,
+                                       const void* const      src_data,
+                                       void* const            dst_data,
+                                       const SchemaType&      src_type,
+                                       const SchemaType&      dst_type)
     {
       if (src_type.IsTrivial() && src_type == dst_type)
       {
@@ -1291,21 +1291,21 @@ namespace BinarySchema
     }
   }  // namespace ConvertInternal
 
-  void Convert(const void* const src_struct,
-               const SchemaType& src_type,
-               void* const       dst_struct,
-               const SchemaType& dst_type,
-               IAllocator&       dst_memory)
+  void Convert(const void* const      src_struct,
+               const SchemaType&      src_type,
+               void* const            dst_struct,
+               const SchemaType&      dst_type,
+               IPolymorphicAllocator& dst_memory)
   {
     return ConvertInternal::ConvertUnqualifiedType(dst_memory, src_struct, dst_struct, src_type, dst_type);
   }
 
-  void Convert(const void* const src_struct,
-               const Schema&     src_schema,
-               void* const       dst_struct,
-               const Schema&     dst_schema,
-               IAllocator&       dst_memory,
-               HashStr32         type_name)
+  void Convert(const void* const      src_struct,
+               const Schema&          src_schema,
+               void* const            dst_struct,
+               const Schema&          dst_schema,
+               IPolymorphicAllocator& dst_memory,
+               HashStr32              type_name)
   {
     const SchemaType* const src_type = src_schema.FindType(type_name);
     const SchemaType* const dst_type = dst_schema.FindType(type_name);
@@ -1318,12 +1318,12 @@ namespace BinarySchema
     return Convert(src_struct, *src_type, dst_struct, *dst_type, dst_memory);
   }
 
-  assetio::IOResult Upgrade(assetio::IByteReader& byte_reader,
-                            IAllocator&           memory,
-                            const SchemaType&     src_type,
-                            const SchemaType&     dst_type,
-                            void* const           dst_struct,
-                            const ByteOrder       byte_order)
+  assetio::IOResult Upgrade(assetio::IByteReader&  byte_reader,
+                            IPolymorphicAllocator& memory,
+                            const SchemaType&      src_type,
+                            const SchemaType&      dst_type,
+                            void* const            dst_struct,
+                            const ByteOrder        byte_order)
   {
     if (src_type == dst_type)
     {
@@ -1352,13 +1352,13 @@ namespace BinarySchema
     }
   }
 
-  assetio::IOResult Upgrade(assetio::IByteReader& byte_reader,
-                            IAllocator&           memory,
-                            const Schema&         src_schema,
-                            const Schema&         dst_schema,
-                            void* const           dst_struct,
-                            const HashStr32       type_name,
-                            const ByteOrder       byte_order)
+  assetio::IOResult Upgrade(assetio::IByteReader&  byte_reader,
+                            IPolymorphicAllocator& memory,
+                            const Schema&          src_schema,
+                            const Schema&          dst_schema,
+                            void* const            dst_struct,
+                            const HashStr32        type_name,
+                            const ByteOrder        byte_order)
   {
     const SchemaType* const src_type = src_schema.FindType(type_name);
     const SchemaType* const dst_type = dst_schema.FindType(type_name);
@@ -1373,10 +1373,10 @@ namespace BinarySchema
 
   namespace FreeInternal
   {
-    static void FreeUnqualifiedType(IAllocator& memory, void* const data, const SchemaType& type);
+    static void FreeUnqualifiedType(IPolymorphicAllocator& memory, void* const data, const SchemaType& type);
 
     static void FreeQualifiedType(
-     IAllocator&               memory,
+     IPolymorphicAllocator&    memory,
      const SchemaType&         parent_type,
      const void* const         parent_object,
      void* const               data,
@@ -1414,7 +1414,7 @@ namespace BinarySchema
       }
     }
 
-    static void FreeUnqualifiedType(IAllocator& memory, void* const data, const SchemaType& type)
+    static void FreeUnqualifiedType(IPolymorphicAllocator& memory, void* const data, const SchemaType& type)
     {
       type.m_Members.ForEach([&](const BinarySchema::HashStr32 member_name, const BinarySchema::StructureMember& member) {
         FreeQualifiedType(
@@ -1429,12 +1429,12 @@ namespace BinarySchema
     }
   }  // namespace FreeInternal
 
-  void FreeDynamicMemory(IAllocator& memory, const SchemaType& type, void* const data)
+  void FreeDynamicMemory(IPolymorphicAllocator& memory, const SchemaType& type, void* const data)
   {
     FreeInternal::FreeUnqualifiedType(memory, data, type);
   }
 
-  void FreeDynamicMemory(IAllocator& memory, const Schema& schema, const HashStr32 type_name, void* const data)
+  void FreeDynamicMemory(IPolymorphicAllocator& memory, const Schema& schema, const HashStr32 type_name, void* const data)
   {
     const SchemaType* const type = schema.FindType(type_name);
 

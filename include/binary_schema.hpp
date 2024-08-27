@@ -19,7 +19,7 @@
 #include "assetio/binary_chunk.hpp"  // VersionType, BaseBinaryChunkHeader
 #include "assetio/rel_ptr.hpp"       // rel_ptr32, rel_array32
 
-#include "memory/basic_types.hpp"  // byte, IAllocator, MemoryRequirements
+#include "memory/basic_types.hpp"  // byte, IPolymorphicAllocator, MemoryRequirements
 
 #include <memory>    // shared_ptr
 #include <optional>  // optional
@@ -238,7 +238,7 @@ namespace BinarySchema
 
     assetio::IOResult Write(assetio::IByteWriter& writer) const;
 
-    static std::optional<Schema> Load(assetio::IByteReader& reader, IAllocator& allocator);
+    static std::optional<Schema> Load(assetio::IByteReader& reader, IPolymorphicAllocator& allocator);
 
     // Buffer lifetime externally managed.
     static std::optional<Schema> FromBuffer(const void* const buffer, const std::size_t buffer_size);
@@ -255,8 +255,8 @@ namespace BinarySchema
     T*            tail         = nullptr;
     std::uint32_t num_elements = 0u;
 
-    T*   Append(IAllocator& memory);
-    void Free(IAllocator& memory);
+    T*   Append(const AllocatorView memory);
+    void Free(const AllocatorView memory);
   };
 
   struct SchemaBuilderMemberQualifier
@@ -295,12 +295,12 @@ namespace BinarySchema
   class MemberBuilder
   {
    private:
-    IAllocator&              m_Allocator;
+    AllocatorView            m_Allocator;
     SchemaBuilderTypeNode&   m_Type;
     SchemaBuilderMemberNode& m_Member;
 
    public:
-    MemberBuilder(IAllocator& allocator, SchemaBuilderTypeNode& type, SchemaBuilderMemberNode& member) :
+    MemberBuilder(const AllocatorView allocator, SchemaBuilderTypeNode& type, SchemaBuilderMemberNode& member) :
       m_Allocator{allocator},
       m_Type{type},
       m_Member{member}
@@ -353,11 +353,11 @@ namespace BinarySchema
   class TypeBuilder
   {
    private:
-    IAllocator&            m_Allocator;
+    AllocatorView          m_Allocator;
     SchemaBuilderTypeNode& m_Type;
 
    public:
-    TypeBuilder(IAllocator& allocator, SchemaBuilderTypeNode& type) :
+    TypeBuilder(const AllocatorView allocator, SchemaBuilderTypeNode& type) :
       m_Allocator{allocator},
       m_Type{type}
     {
@@ -387,7 +387,7 @@ namespace BinarySchema
   {
    private:
     std::uint32_t          m_NumTypes     = 0u;
-    IAllocator*            m_Memory       = nullptr;
+    IPolymorphicAllocator* m_Memory       = nullptr;
     SchemaBuilderTypeNode* m_TypeListHead = nullptr;
 
    public:
@@ -404,7 +404,7 @@ namespace BinarySchema
       return AddType(name, sizeof(T), alignof(T), flags);
     }
 
-    void                  Begin(IAllocator& working_memory);
+    void                  Begin(IPolymorphicAllocator& working_memory);
     TypeBuilder           AddType(HashStr32 name, std::uint32_t size, std::uint32_t alignment, SchemaTypeFlags flags = SchemaTypeFlags::None);
     SchemaBuilderEndToken End(const SchemaHeader::Flags flags = SchemaHeader::TypesSorted);
 
@@ -423,7 +423,7 @@ namespace BinarySchema
      *   The built schema, `memory` is non owned so must be free manually.
      */
     std::optional<Schema> Build(void* const memory, const SchemaBuilderEndToken& end_token) const;
-    std::optional<Schema> Build(IAllocator& allocator, const SchemaBuilderEndToken& end_token) const;
+    std::optional<Schema> Build(IPolymorphicAllocator& allocator, const SchemaBuilderEndToken& end_token) const;
 
     void ReleaseResources();
 
@@ -466,53 +466,53 @@ namespace BinarySchema
 
   // Goes from byte stream to in memory representation.
 
-  assetio::IOResult Read(assetio::IByteReader& byte_reader,
-                         IAllocator&           memory,
-                         const SchemaType&     type,
-                         void* const           data,
-                         const ByteOrder       byte_order = ByteOrder::Native);
-  assetio::IOResult Read(assetio::IByteReader& byte_reader,
-                         IAllocator&           memory,
-                         const Schema&         schema,
-                         const HashStr32       type_name,
-                         void* const           data,
-                         const ByteOrder       byte_order = ByteOrder::Native);
+  assetio::IOResult Read(assetio::IByteReader&  byte_reader,
+                         IPolymorphicAllocator& memory,
+                         const SchemaType&      type,
+                         void* const            data,
+                         const ByteOrder        byte_order = ByteOrder::Native);
+  assetio::IOResult Read(assetio::IByteReader&  byte_reader,
+                         IPolymorphicAllocator& memory,
+                         const Schema&          schema,
+                         const HashStr32        type_name,
+                         void* const            data,
+                         const ByteOrder        byte_order = ByteOrder::Native);
 
   // Convert from in memory to in memory across schemas.
   // `src_struct` and `dst_struct` scalar variables expected to have the same endianness.
 
-  void Convert(const void* const src_struct,
-               const SchemaType& src_type,
-               void* const       dst_struct,
-               const SchemaType& dst_type,
-               IAllocator&       dst_memory);
-  void Convert(const void* const src_struct,
-               const Schema&     src_schema,
-               void* const       dst_struct,
-               const Schema&     dst_schema,
-               IAllocator&       dst_memory,
-               HashStr32         type_name);
+  void Convert(const void* const      src_struct,
+               const SchemaType&      src_type,
+               void* const            dst_struct,
+               const SchemaType&      dst_type,
+               IPolymorphicAllocator& dst_memory);
+  void Convert(const void* const      src_struct,
+               const Schema&          src_schema,
+               void* const            dst_struct,
+               const Schema&          dst_schema,
+               IPolymorphicAllocator& dst_memory,
+               HashStr32              type_name);
 
   // Combined Read + Convert optimized for the case when the src_schema and dst_struct types are the same.
 
-  assetio::IOResult Upgrade(assetio::IByteReader& byte_reader,
-                            IAllocator&           memory,
-                            const SchemaType&     src_type,
-                            const SchemaType&     dst_type,
-                            void* const           dst_struct,
-                            const ByteOrder       byte_order = ByteOrder::Native);
-  assetio::IOResult Upgrade(assetio::IByteReader& byte_reader,
-                            IAllocator&           memory,
-                            const Schema&         src_schema,
-                            const Schema&         dst_schema,
-                            void* const           dst_struct,
-                            const HashStr32       type_name,
-                            const ByteOrder       byte_order = ByteOrder::Native);
+  assetio::IOResult Upgrade(assetio::IByteReader&  byte_reader,
+                            IPolymorphicAllocator& memory,
+                            const SchemaType&      src_type,
+                            const SchemaType&      dst_type,
+                            void* const            dst_struct,
+                            const ByteOrder        byte_order = ByteOrder::Native);
+  assetio::IOResult Upgrade(assetio::IByteReader&  byte_reader,
+                            IPolymorphicAllocator& memory,
+                            const Schema&          src_schema,
+                            const Schema&          dst_schema,
+                            void* const            dst_struct,
+                            const HashStr32        type_name,
+                            const ByteOrder        byte_order = ByteOrder::Native);
 
   // Frees any memory dynamically allocated from either a Read, Convert or Upgrade.
 
-  void FreeDynamicMemory(IAllocator& memory, const SchemaType& type, void* const data);
-  void FreeDynamicMemory(IAllocator& memory, const Schema& schema, const HashStr32 type_name, void* const data);
+  void FreeDynamicMemory(IPolymorphicAllocator& memory, const SchemaType& type, void* const data);
+  void FreeDynamicMemory(IPolymorphicAllocator& memory, const Schema& schema, const HashStr32 type_name, void* const data);
 
 }  // namespace BinarySchema
 
