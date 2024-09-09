@@ -458,7 +458,7 @@ namespace BinarySchema
     member->name       = name;
     member->base_type  = type_name;
     member->qualifiers = {};
-    member->offset     = offset;
+    member->offset     = SizeType(offset);
     member->next       = nullptr;
 
     return MemberBuilder{m_Allocator, m_Type, *member};

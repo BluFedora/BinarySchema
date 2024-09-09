@@ -39,7 +39,7 @@ namespace BinarySchema
   // Schema API
   //
 
-  using SizeType       = std::uint64_t;
+  using SizeType       = std::uint32_t;
   using ArrayCountType = std::uint32_t;
 
   struct HashStr32
@@ -151,9 +151,9 @@ namespace BinarySchema
     inline const void* GetMemberData(const void* const struct_ptr) const noexcept { return reinterpret_cast<const byte*>(struct_ptr) + offset; }
     bool               IsConvertCompatibleWith(const StructureMember& rhs) const noexcept;
   };
-  static_assert(sizeof(StructureMember) == 24u, "");
+  static_assert(sizeof(StructureMember) == 20u, "");
 
-  enum class SchemaTypeFlags : std::uint32_t
+  enum class SchemaTypeFlags : std::uint16_t
   {
     None            = 0x0,
     IsTrivial       = (1 << 0),  //!< The type will be bulk copied, rather than (de)serialized member by member.
@@ -169,15 +169,13 @@ namespace BinarySchema
     return std::uint32_t(lhs) & std::uint32_t(rhs);
   }
 
-  // TODO(SR): Downgrade `m_Flags` and `m_Alignment` to 16bit.
-  // TODO(SR): Downgrade `m_Size` to 32bit.
   struct SchemaType
   {
     HashStr32                       m_Name;
     SchemaTypeFlags                 m_Flags;
+    std::uint16_t                   m_Alignment;
     SizeType                        m_Size;
     HashStr32Table<StructureMember> m_Members;
-    std::uint32_t                   m_Alignment;
 
     SchemaType()                      = default;
     SchemaType(const SchemaType& rhs) = delete;
@@ -189,7 +187,7 @@ namespace BinarySchema
     bool             IsEndianDependent() const { return (m_Flags & SchemaTypeFlags::IsEndianDependent) && m_Size > 1 && m_Size <= sizeof(std::uint64_t); }
     StructureMember* FindMember(const HashStr32 name) const;
   };
-  static_assert(sizeof(SchemaType) == 32u, "When this changes must bump `SchemaHeaderVersion` and modify the `Schema::Load` function.");
+  static_assert(sizeof(SchemaType) == 24u, "When this changes must bump `SchemaHeaderVersion` and modify the `Schema::Load` function.");
 
   bool        operator==(const SchemaType& lhs, const SchemaType& rhs);
   inline bool operator!=(const SchemaType& lhs, const SchemaType& rhs)
