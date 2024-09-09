@@ -16,8 +16,9 @@
 #ifndef BINARY_SCHEMA_HPP
 #define BINARY_SCHEMA_HPP
 
-#include "assetio/binary_chunk.hpp"  // VersionType, BaseBinaryChunkHeader
-#include "assetio/rel_ptr.hpp"       // rel_ptr32, rel_array32
+#include "binaryio/binary_chunk.hpp"  // VersionType, BaseBinaryChunkHeader
+#include "binaryio/binary_types.hpp"
+#include "binaryio/rel_ptr.hpp"  // rel_ptr32, rel_array32
 
 #include "memory/basic_types.hpp"  // byte, IPolymorphicAllocator, MemoryRequirements
 
@@ -31,15 +32,6 @@
 #ifndef BINARY_SCHEMA_RUNTIME_VALIDATION
 #define BINARY_SCHEMA_RUNTIME_VALIDATION 1  //!< For retail builds should be set to `0`, provides extra validation when using the schema.
 #endif
-
-namespace assetio
-{
-  enum class IOResult : std::uint32_t;
-
-  struct IByteReader;
-  struct IByteWriter;
-
-}  // namespace assetio
 
 namespace BinarySchema
 {
@@ -82,9 +74,9 @@ namespace BinarySchema
   template<typename T>
   struct HashStr32Table
   {
-    assetio::rel_ptr32<HashStr32> keys;
-    assetio::rel_ptr32<T>         values;
-    std::uint32_t                 size;
+    binaryIO::rel_ptr32<HashStr32> keys;
+    binaryIO::rel_ptr32<T>         values;
+    std::uint32_t                  size;
 
     HashStr32Table()                          = default;
     HashStr32Table(const HashStr32Table& rhs) = delete;
@@ -146,10 +138,10 @@ namespace BinarySchema
 
   struct StructureMember
   {
-    assetio::rel_ptr32<const struct SchemaType> base_type;
-    HashStr32                                   base_type_name;
-    assetio::rel_array32<TypeByteCode>          type_ctors;
-    SizeType                                    offset;
+    binaryIO::rel_ptr32<const struct SchemaType> base_type;
+    HashStr32                                    base_type_name;
+    binaryIO::rel_array32<TypeByteCode>          type_ctors;
+    SizeType                                     offset;
 
     StructureMember()                           = default;
     StructureMember(const StructureMember& rhs) = delete;
@@ -205,7 +197,7 @@ namespace BinarySchema
     return !(lhs == rhs);
   }
 
-  enum SchemaHeaderVersion : assetio::VersionType
+  enum SchemaHeaderVersion : binaryIO::VersionType
   {
     SCHEMA_VERSION_INITIAL = 0,  //!< Initial version of the binary schema format.
 
@@ -213,7 +205,7 @@ namespace BinarySchema
     SCHEMA_VERSION_CURRENT = SCHEMA_VERSION_ONE_PAST_LAST - 1,  //!< Current version of the format.
   };
 
-  struct SchemaHeader : public assetio::BaseBinaryChunkHeader<SchemaHeader, SCHEMA_VERSION_CURRENT, assetio::MakeBinaryChunkTypeID("SBIN")>
+  struct SchemaHeader : public binaryIO::BaseBinaryChunkHeader<SchemaHeader, SCHEMA_VERSION_CURRENT, binaryIO::MakeBinaryChunkTypeID("SBIN")>
   {
     enum Flags : std::uint32_t
     {
@@ -236,9 +228,9 @@ namespace BinarySchema
     const SchemaType* Types() const;
     const SchemaType* FindType(const HashStr32 name) const;
 
-    assetio::IOResult Write(assetio::IByteWriter& writer) const;
+    binaryIO::IOErrorCode Write(binaryIO::IOStream* const stream) const;
 
-    static std::optional<Schema> Load(assetio::IByteReader& reader, IPolymorphicAllocator& allocator);
+    static std::optional<Schema> Load(binaryIO::IOStream* const stream, IPolymorphicAllocator& allocator);
 
     // Buffer lifetime externally managed.
     static std::optional<Schema> FromBuffer(const void* const buffer, const std::size_t buffer_size);
@@ -454,29 +446,29 @@ namespace BinarySchema
 
   // Goes from in memory to byte stream.
 
-  assetio::IOResult Write(assetio::IByteWriter& byte_writer,
-                          const SchemaType&     type,
-                          const void* const     data,
-                          const ByteOrder       byte_order = ByteOrder::Native);
-  assetio::IOResult Write(assetio::IByteWriter& byte_writer,
-                          const Schema&         schema,
-                          const HashStr32       type_name,
-                          const void* const     data,
-                          const ByteOrder       byte_order = ByteOrder::Native);
+  binaryIO::IOErrorCode Write(binaryIO::IOStream* const stream,
+                              const SchemaType&         type,
+                              const void* const         data,
+                              const ByteOrder           byte_order = ByteOrder::Native);
+  binaryIO::IOErrorCode Write(binaryIO::IOStream* const stream,
+                              const Schema&             schema,
+                              const HashStr32           type_name,
+                              const void* const         data,
+                              const ByteOrder           byte_order = ByteOrder::Native);
 
   // Goes from byte stream to in memory representation.
 
-  assetio::IOResult Read(assetio::IByteReader&  byte_reader,
-                         IPolymorphicAllocator& memory,
-                         const SchemaType&      type,
-                         void* const            data,
-                         const ByteOrder        byte_order = ByteOrder::Native);
-  assetio::IOResult Read(assetio::IByteReader&  byte_reader,
-                         IPolymorphicAllocator& memory,
-                         const Schema&          schema,
-                         const HashStr32        type_name,
-                         void* const            data,
-                         const ByteOrder        byte_order = ByteOrder::Native);
+  binaryIO::IOErrorCode Read(binaryIO::IOStream* const stream,
+                             IPolymorphicAllocator&    memory,
+                             const SchemaType&         type,
+                             void* const               data,
+                             const ByteOrder           byte_order = ByteOrder::Native);
+  binaryIO::IOErrorCode Read(binaryIO::IOStream* const stream,
+                             IPolymorphicAllocator&    memory,
+                             const Schema&             schema,
+                             const HashStr32           type_name,
+                             void* const               data,
+                             const ByteOrder           byte_order = ByteOrder::Native);
 
   // Convert from in memory to in memory across schemas.
   // `src_struct` and `dst_struct` scalar variables expected to have the same endianness.
@@ -495,19 +487,19 @@ namespace BinarySchema
 
   // Combined Read + Convert optimized for the case when the src_schema and dst_struct types are the same.
 
-  assetio::IOResult Upgrade(assetio::IByteReader&  byte_reader,
-                            IPolymorphicAllocator& memory,
-                            const SchemaType&      src_type,
-                            const SchemaType&      dst_type,
-                            void* const            dst_struct,
-                            const ByteOrder        byte_order = ByteOrder::Native);
-  assetio::IOResult Upgrade(assetio::IByteReader&  byte_reader,
-                            IPolymorphicAllocator& memory,
-                            const Schema&          src_schema,
-                            const Schema&          dst_schema,
-                            void* const            dst_struct,
-                            const HashStr32        type_name,
-                            const ByteOrder        byte_order = ByteOrder::Native);
+  binaryIO::IOErrorCode Upgrade(binaryIO::IOStream* const stream,
+                                IPolymorphicAllocator&    memory,
+                                const SchemaType&         src_type,
+                                const SchemaType&         dst_type,
+                                void* const               dst_struct,
+                                const ByteOrder           byte_order = ByteOrder::Native);
+  binaryIO::IOErrorCode Upgrade(binaryIO::IOStream* const stream,
+                                IPolymorphicAllocator&    memory,
+                                const Schema&             src_schema,
+                                const Schema&             dst_schema,
+                                void* const               dst_struct,
+                                const HashStr32           type_name,
+                                const ByteOrder           byte_order = ByteOrder::Native);
 
   // Frees any memory dynamically allocated from either a Read, Convert or Upgrade.
 

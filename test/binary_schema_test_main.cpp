@@ -6,12 +6,11 @@
 
 #include <catch2/catch_test_macros.hpp>  // Catch2 API
 
-#include "assetio/binary_stream_ext.hpp"  // byteWriterViewFromVector
+#include "binaryio/binary_stream_ext.hpp"  // byteWriterViewFromVector
 
-#include "memory/allocation.hpp"      // bfMemAllocate, bfMemDeallocate
-#include "memory/default_heap.hpp"    // DefaultHeap
-#include "memory/memory_manager.hpp"  // MemoryTrackAllocate, MemoryTrackDeallocate
-#include "memory/stl_allocator.hpp"   // StlAllocator
+#include "memory/allocation.hpp"     // bfMemAllocate, bfMemDeallocate
+#include "memory/default_heap.hpp"   // DefaultHeap
+#include "memory/stl_allocator.hpp"  // StlAllocator
 
 #include <vector>  // vector
 
@@ -80,12 +79,12 @@ struct ByteCounterTracking
 {
   size_t num_bytes_allocated = 0u;
 
-  void TrackAllocate(const Memory::MemoryTrackAllocate& allocate_info) noexcept
+  void TrackAllocate(const MemoryTrackAllocate& allocate_info) noexcept
   {
     num_bytes_allocated += allocate_info.requested_bytes;
   }
 
-  void TrackDeallocate(const Memory::MemoryTrackDeallocate& deallocate_info) noexcept
+  void TrackDeallocate(const MemoryTrackDeallocate& deallocate_info) noexcept
   {
     num_bytes_allocated -= deallocate_info.num_bytes;
   }
@@ -104,7 +103,7 @@ struct HeapAllocator
   }
 };
 
-struct ByteCountingAllocator : public Allocator<Memory::MemoryManager<HeapAllocator, Memory::AllocationMarkPolicy::MARK, Memory::BoundCheckingPolicy::CHECKED, ByteCounterTracking, Memory::NoLock>>
+struct ByteCountingAllocator : public Allocator<HeapAllocator, AllocationMarkPolicy::MARKED, BoundCheckingPolicy::CHECKED, ByteCounterTracking, Memory::NoLock>
 {
 };
 
@@ -129,25 +128,26 @@ TEST_CASE("Endianness", "[core-functionality]")
   ByteCountingAllocator allocator{};
   {
     std::vector<byte, Memory::StlAllocator<byte>> bytes{allocator};
-    assetio::ByteWriterView                       byte_writer = assetio::byteWriterViewFromVector(&bytes);
 
-    REQUIRE(assetio::writeLE(byte_writer, le_value) == assetio::IOResult::Success);
-    REQUIRE(assetio::writeBE(byte_writer, be_value) == assetio::IOResult::Success);
-    REQUIRE(assetio::writeLE(byte_writer, le_value) == assetio::IOResult::Success);
-    REQUIRE(assetio::writeBE(byte_writer, be_value) == assetio::IOResult::Success);
+    binaryIO::IOStream byte_writer = binaryIO::IOStream_FromVector(&bytes);
 
-    assetio::IByteReader byte_reader = assetio::IByteReader::fromBuffer(bytes.data(), bytes.size());
+    REQUIRE(writeLE(&byte_writer, le_value).ErrorCode() == binaryIO::IOErrorCode::Success);
+    REQUIRE(writeBE(&byte_writer, be_value).ErrorCode() == binaryIO::IOErrorCode::Success);
+    REQUIRE(writeLE(&byte_writer, le_value).ErrorCode() == binaryIO::IOErrorCode::Success);
+    REQUIRE(writeBE(&byte_writer, be_value).ErrorCode() == binaryIO::IOErrorCode::Success);
+
+    binaryIO::IOStream byte_reader = binaryIO::IOStream_FromROMemory(bytes.data(), bytes.size());
 
     int32_t  le_int;
     uint32_t be_uint;
     int32_t  le_int_inv;
     uint32_t be_uint_inv;
     uint32_t invalid_uint = 0xFFFFFFFF;
-    REQUIRE(assetio::readLE(byte_reader, &le_int) == assetio::IOResult::Success);
-    REQUIRE(assetio::readBE(byte_reader, &be_uint) == assetio::IOResult::Success);
-    REQUIRE(assetio::readBE(byte_reader, &le_int_inv) == assetio::IOResult::Success);
-    REQUIRE(assetio::readLE(byte_reader, &be_uint_inv) == assetio::IOResult::Success);
-    REQUIRE(assetio::readBE(byte_reader, &invalid_uint) == assetio::IOResult::EndOfStream);
+    REQUIRE(readLE(&byte_reader, &le_int).ErrorCode() == binaryIO::IOErrorCode::Success);
+    REQUIRE(readBE(&byte_reader, &be_uint).ErrorCode() == binaryIO::IOErrorCode::Success);
+    REQUIRE(readBE(&byte_reader, &le_int_inv).ErrorCode() == binaryIO::IOErrorCode::Success);
+    REQUIRE(readLE(&byte_reader, &be_uint_inv).ErrorCode() == binaryIO::IOErrorCode::Success);
+    REQUIRE(readBE(&byte_reader, &invalid_uint).ErrorCode() == binaryIO::IOErrorCode::EndOfStream);
 
     REQUIRE(le_int == le_value);
     REQUIRE(be_uint == be_value);
@@ -209,20 +209,20 @@ TEST_CASE("Round Trip Serialization/Deserialization", "[BinarySchema]")
       if (schema)
       {
         std::vector<byte, Memory::StlAllocator<byte>> serialized_object{allocator};
-        assetio::ByteWriterView                       byte_writer = assetio::byteWriterViewFromVector(&serialized_object);
+        binaryIO::IOStream                            byte_writer = binaryIO::IOStream_FromVector(&serialized_object);
 
         const TrivialType saved_data{1.0f, 2.0f, 3.0f};
 
-        assetio::IOResult io_result = BinarySchema::Write(byte_writer, *schema, "TrivialType", &saved_data, byte_order);
+        binaryIO::IOErrorCode io_result = BinarySchema::Write(&byte_writer, *schema, "TrivialType", &saved_data, byte_order);
 
-        REQUIRE(io_result == assetio::IOResult::Success);
+        REQUIRE(io_result == binaryIO::IOErrorCode::Success);
 
-        assetio::IByteReader byte_reader = assetio::IByteReader::fromBuffer(serialized_object.data(), serialized_object.size());
-        TrivialType          loaded_data;
+        binaryIO::IOStream byte_reader = binaryIO::IOStream_FromROMemory(serialized_object.data(), serialized_object.size());
+        TrivialType        loaded_data;
 
-        io_result = BinarySchema::Read(byte_reader, allocator, *schema, "TrivialType", &loaded_data, byte_order);
+        io_result = BinarySchema::Read(&byte_reader, allocator, *schema, "TrivialType", &loaded_data, byte_order);
 
-        REQUIRE(io_result == assetio::IOResult::Success);
+        REQUIRE(io_result == binaryIO::IOErrorCode::Success);
 
         REQUIRE(saved_data.x == loaded_data.x);
         REQUIRE(saved_data.y == loaded_data.y);
@@ -249,7 +249,7 @@ TEST_CASE("Round Trip Serialization/Deserialization", "[BinarySchema]")
       if (schema)
       {
         std::vector<byte, Memory::StlAllocator<byte>> serialized_object{allocator};
-        assetio::ByteWriterView                       byte_writer = assetio::byteWriterViewFromVector(&serialized_object);
+        binaryIO::IOStream                            byte_writer = binaryIO::IOStream_FromVector(&serialized_object);
 
         const int dynamic_array_size = 3;
         const int heap_array_size    = 4;
@@ -276,17 +276,17 @@ TEST_CASE("Round Trip Serialization/Deserialization", "[BinarySchema]")
 
         REQUIRE(complex_type != nullptr);
 
-        assetio::IOResult io_result = BinarySchema::Write(byte_writer, *complex_type, &saved_data, byte_order);
+        binaryIO::IOErrorCode io_result = BinarySchema::Write(&byte_writer, *complex_type, &saved_data, byte_order);
 
-        REQUIRE(io_result == assetio::IOResult::Success);
+        REQUIRE(io_result == binaryIO::IOErrorCode::Success);
 
-        assetio::IByteReader byte_reader = assetio::IByteReader::fromBuffer(serialized_object.data(), serialized_object.size());
-        ComplexTypeV1        loaded_data;
+        binaryIO::IOStream byte_reader = binaryIO::IOStream_FromROMemory(serialized_object.data(), serialized_object.size());
+        ComplexTypeV1      loaded_data;
         std::memset(&loaded_data, 0x0, sizeof(loaded_data));
 
-        io_result = BinarySchema::Read(byte_reader, allocator, *complex_type, &loaded_data, byte_order);
+        io_result = BinarySchema::Read(&byte_reader, allocator, *complex_type, &loaded_data, byte_order);
 
-        REQUIRE(io_result == assetio::IOResult::Success);
+        REQUIRE(io_result == binaryIO::IOErrorCode::Success);
 
         REQUIRE(loaded_data.ptr != nullptr);
         if (loaded_data.ptr)
@@ -375,7 +375,7 @@ TEST_CASE("Upgrade", "[BinarySchema]")
         REQUIRE(complex_type_v2 != nullptr);
 
         std::vector<byte, Memory::StlAllocator<byte>> serialized_object{allocator};
-        assetio::ByteWriterView                       byte_writer = assetio::byteWriterViewFromVector(&serialized_object);
+        binaryIO::IOStream                            byte_writer = binaryIO::IOStream_FromVector(&serialized_object);
 
         const int dynamic_array_size  = 3;
         const int old_heap_array_size = 4;
@@ -399,18 +399,18 @@ TEST_CASE("Upgrade", "[BinarySchema]")
          {23.0f, 33.0f, 43.0f},
         };
 
-        assetio::IOResult io_result = BinarySchema::Write(byte_writer, *complex_type_v1, &saved_data, byte_order);
+        binaryIO::IOErrorCode io_result = BinarySchema::Write(&byte_writer, *complex_type_v1, &saved_data, byte_order);
 
-        REQUIRE(io_result == assetio::IOResult::Success);
+        REQUIRE(io_result == binaryIO::IOErrorCode::Success);
 
-        assetio::IByteReader byte_reader = assetio::IByteReader::fromBuffer(serialized_object.data(), serialized_object.size());
-        ComplexTypeV2        loaded_data;
+        binaryIO::IOStream byte_reader = binaryIO::IOStream_FromROMemory(serialized_object.data(), serialized_object.size());
+        ComplexTypeV2      loaded_data;
         std::memset(&loaded_data, 0x0, sizeof(loaded_data));
         loaded_data.new_member = 5.5f;
 
-        io_result = BinarySchema::Upgrade(byte_reader, allocator, *complex_type_v1, *complex_type_v2, &loaded_data, byte_order);
+        io_result = BinarySchema::Upgrade(&byte_reader, allocator, *complex_type_v1, *complex_type_v2, &loaded_data, byte_order);
 
-        REQUIRE(io_result == assetio::IOResult::Success);
+        REQUIRE(io_result == binaryIO::IOErrorCode::Success);
 
         REQUIRE(loaded_data.ptr != nullptr);
         if (loaded_data.ptr)
@@ -476,4 +476,11 @@ TEST_CASE("Upgrade", "[BinarySchema]")
     }
     REQUIRE(allocator.num_bytes_allocated == 0);
   }
+}
+
+#include <catch2/catch_session.hpp>
+
+int main(int argc, char* argv[])
+{
+  return Catch::Session().run(argc, argv);
 }

@@ -36,7 +36,7 @@ if (BINARY_SCHEMA_UNIT_TESTS)
   FetchContent_Declare(
     Catch2
     GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-    GIT_TAG        v3.4.0
+    GIT_TAG        v3.7.0
   )
   FetchContent_MakeAvailable(Catch2)
 
@@ -50,6 +50,7 @@ if (BINARY_SCHEMA_UNIT_TESTS)
 
     PRIVATE
       AssetIO_BinarySchema
+      Catch2::Catch2
       Catch2::Catch2WithMain
   )
   set_property(TARGET BinarySchemaTest PROPERTY FOLDER "BluFedora/Test")

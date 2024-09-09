@@ -15,7 +15,7 @@
 /******************************************************************************/
 #include "binary_schema.hpp"
 
-#include "assetio/binary_stream.hpp"  // binaryIOAssert, IByteWriter, IByteReader, IOResult
+#include "binaryio/binary_stream.hpp"  // binaryIOAssert, IByteWriter, IByteReader, IOErrorCode
 
 #include "memory/smart_pointer.hpp"  // bfMemMakeShared
 
@@ -31,7 +31,7 @@
 #elif defined(_MSC_VER)
 #define unreachable() __assume(0)
 #else
-#define unreachable() return assetio::IOResult::UnknownError;
+#define unreachable() return binaryIO::IOErrorCode::UnknownError;
 #endif
 
 namespace BinarySchema
@@ -142,19 +142,19 @@ namespace BinarySchema
   }
 
   template<typename offset_type_t, typename T, std::uint8_t alignment>
-  static bool VerifyRelPointer(const assetio::rel_ptr<offset_type_t, T, alignment>& pointer, const unsigned char* const data_block, const std::uint64_t data_block_size)
+  static bool VerifyRelPointer(const binaryIO::rel_ptr<offset_type_t, T, alignment>& pointer, const unsigned char* const data_block, const std::uint64_t data_block_size)
   {
     return VerifyPointer(pointer.get(), data_block, data_block_size);
   }
 
   template<typename TCount, typename TPtr>
-  static bool VerifyRelArray(const assetio::rel_array<TCount, TPtr>& arr, const unsigned char* const data_block, const std::uint64_t data_block_size)
+  static bool VerifyRelArray(const binaryIO::rel_array<TCount, TPtr>& arr, const unsigned char* const data_block, const std::uint64_t data_block_size)
   {
     return VerifyPointer(arr.begin(), data_block, data_block_size) &&
            VerifyPointer(arr.end(), data_block, data_block_size);
   }
 
-  static bool VerifyTypeByteCode(const SchemaType& type, const assetio::rel_array32<TypeByteCode>& byte_code, const unsigned char* const data_block, const std::uint64_t data_block_size)
+  static bool VerifyTypeByteCode(const SchemaType& type, const binaryIO::rel_array32<TypeByteCode>& byte_code, const unsigned char* const data_block, const std::uint64_t data_block_size)
   {
     if (!VerifyRelArray(byte_code, data_block, data_block_size))
     {
@@ -324,20 +324,20 @@ namespace BinarySchema
     }
   }
 
-  assetio::IOResult Schema::Write(assetio::IByteWriter& writer) const
+  binaryIO::IOErrorCode Schema::Write(binaryIO::IOStream* const stream) const
   {
-    assetio::IOResult result = assetio::IOResult::Success;
+    binaryIO::IOErrorCode result = binaryIO::IOErrorCode::Success;
 
-    result += writer.write(&header, sizeof(SchemaHeader));
-    result += writer.write(data_bytes.get(), header.data_size);
+    IOStream_Write(stream, &header, sizeof(SchemaHeader));
+    IOStream_Write(stream, data_bytes.get(), header.data_size);
 
-    return result;
+    return stream->error_state;
   }
 
-  std::optional<Schema> Schema::Load(assetio::IByteReader& reader, IPolymorphicAllocator& allocator)
+  std::optional<Schema> Schema::Load(binaryIO::IOStream* const stream, IPolymorphicAllocator& allocator)
   {
     Schema result;
-    if (reader.read(&result.header, sizeof(SchemaHeader)) == assetio::IOResult::Success)
+    if (IOStream_Read(stream, &result.header, sizeof(SchemaHeader)).ErrorCode() == binaryIO::IOErrorCode::Success)
     {
       if (result.header.version == SCHEMA_VERSION_INITIAL)
       {
@@ -353,7 +353,7 @@ namespace BinarySchema
            },
            Memory::StlAllocator<SchemaType>(allocator));
 
-          if (reader.read(data_bytes, data_bytes_size) == assetio::IOResult::Success)
+          if (IOStream_Read(stream, data_bytes, data_bytes_size).ErrorCode() == binaryIO::IOErrorCode::Success)
           {
             if (VerifySchema(result))
             {
@@ -862,11 +862,11 @@ namespace BinarySchema
   namespace WriteInternal
   {
     template<ByteOrder byte_order>
-    static assetio::IOResult WriteUnqualifiedType(assetio::IByteWriter& byte_writer, const void* const data, const SchemaType& type);
+    static binaryIO::IOErrorCode WriteUnqualifiedType(binaryIO::IOStream* const stream, const void* const data, const SchemaType& type);
 
     template<ByteOrder byte_order>
-    static assetio::IOResult WriteQualifiedType(
-     assetio::IByteWriter&     byte_writer,
+    static binaryIO::IOErrorCode WriteQualifiedType(
+     binaryIO::IOStream* const stream,
      const SchemaType&         parent_type,
      const void* const         parent_object,
      const void* const         data,
@@ -874,8 +874,6 @@ namespace BinarySchema
      const TypeByteCode*       type_bytecode,
      const TypeByteCode* const type_bytecode_end)
     {
-      assetio::IOResult result = assetio::IOResult::Success;
-
       if (type_bytecode != type_bytecode_end)
       {
         const TypeConstructorByteCodeResult byte_code = ByteCodeInternal::ReadTypeCtorBytecode<false>(type_bytecode, parent_type, parent_object);
@@ -887,7 +885,7 @@ namespace BinarySchema
           data_location = *static_cast<const void* const*>(data);
 
           const std::uint8_t is_non_null = data_location ? 1 : 0;
-          result += byte_writer.write(&is_non_null, sizeof(is_non_null));
+          IOStream_Write(stream, &is_non_null, sizeof(is_non_null));
         }
 
         if (data_location)
@@ -898,23 +896,21 @@ namespace BinarySchema
           {
             const void* const element = static_cast<const char*>(data_location) + stride * i;
 
-            result += WriteQualifiedType<byte_order>(byte_writer, parent_type, parent_object, element, base_type, type_bytecode, type_bytecode_end);
+            WriteQualifiedType<byte_order>(stream, parent_type, parent_object, element, base_type, type_bytecode, type_bytecode_end);
           }
         }
       }
       else
       {
-        result += WriteUnqualifiedType<byte_order>(byte_writer, data, base_type);
+        WriteUnqualifiedType<byte_order>(stream, data, base_type);
       }
 
-      return result;
+      return stream->error_state;
     }
 
     template<ByteOrder byte_order>
-    static assetio::IOResult WriteUnqualifiedType(assetio::IByteWriter& byte_writer, const void* const data, const SchemaType& type)
+    static binaryIO::IOErrorCode WriteUnqualifiedType(binaryIO::IOStream* const stream, const void* const data, const SchemaType& type)
     {
-      assetio::IOResult result = assetio::IOResult::Success;
-
       if (type.IsTrivial())
       {
         if (type.IsEndianDependent())
@@ -922,43 +918,39 @@ namespace BinarySchema
           // @ByteOrder
           if constexpr (byte_order == ByteOrder::Native)
           {
-            result += byte_writer.write(data, type.m_Size);
+            IOStream_Write(stream, data, type.m_Size);
           }
           else if constexpr (byte_order == ByteOrder::LittleEndian)
           {
-            result += [&]() -> assetio::IOResult {
-              switch (type.m_Size)
-              {
-                case 2u: return assetio::writeLE(byte_writer, *static_cast<const std::uint16_t*>(data));
-                case 4u: return assetio::writeLE(byte_writer, *static_cast<const std::uint32_t*>(data));
-                case 8u: return assetio::writeLE(byte_writer, *static_cast<const std::uint64_t*>(data));
-                default: unreachable();
-              }
-            }();
+            switch (type.m_Size)
+            {
+              case 2u: writeLE(stream, *static_cast<const std::uint16_t*>(data)); break;
+              case 4u: writeLE(stream, *static_cast<const std::uint32_t*>(data)); break;
+              case 8u: writeLE(stream, *static_cast<const std::uint64_t*>(data)); break;
+              default: unreachable();
+            }
           }
           else if constexpr (byte_order == ByteOrder::BigEndian)
           {
-            result += [&]() -> assetio::IOResult {
-              switch (type.m_Size)
-              {
-                case 2u: return assetio::writeBE(byte_writer, *static_cast<const std::uint16_t*>(data));
-                case 4u: return assetio::writeBE(byte_writer, *static_cast<const std::uint32_t*>(data));
-                case 8u: return assetio::writeBE(byte_writer, *static_cast<const std::uint64_t*>(data));
-                default: unreachable();
-              }
-            }();
+            switch (type.m_Size)
+            {
+              case 2u: writeBE(stream, *static_cast<const std::uint16_t*>(data)); break;
+              case 4u: writeBE(stream, *static_cast<const std::uint32_t*>(data)); break;
+              case 8u: writeBE(stream, *static_cast<const std::uint64_t*>(data)); break;
+              default: unreachable();
+            }
           }
         }
         else
         {
-          result += byte_writer.write(data, type.m_Size);
+          IOStream_Write(stream, data, type.m_Size);
         }
       }
       else
       {
         type.m_Members.ForEach([&](const BinarySchema::HashStr32 member_name, const BinarySchema::StructureMember& member) {
-          result += WriteQualifiedType<byte_order>(
-           byte_writer,
+          WriteQualifiedType<byte_order>(
+           stream,
            type,
            data,
            member.GetMemberData(data),
@@ -968,30 +960,30 @@ namespace BinarySchema
         });
       }
 
-      return result;
+      return stream->error_state;
     }
   }  // namespace WriteInternal
 
-  assetio::IOResult Write(assetio::IByteWriter& byte_writer,
-                          const SchemaType&     type,
-                          const void* const     data,
-                          const ByteOrder       byte_order)
+  binaryIO::IOErrorCode Write(binaryIO::IOStream* const stream,
+                              const SchemaType&         type,
+                              const void* const         data,
+                              const ByteOrder           byte_order)
   {
     // @ByteOrder
     switch (byte_order)
     {
-      case ByteOrder::Native: return WriteInternal::WriteUnqualifiedType<ByteOrder::Native>(byte_writer, data, type);
-      case ByteOrder::LittleEndian: return WriteInternal::WriteUnqualifiedType<ByteOrder::LittleEndian>(byte_writer, data, type);
-      case ByteOrder::BigEndian: return WriteInternal::WriteUnqualifiedType<ByteOrder::BigEndian>(byte_writer, data, type);
+      case ByteOrder::Native: return WriteInternal::WriteUnqualifiedType<ByteOrder::Native>(stream, data, type);
+      case ByteOrder::LittleEndian: return WriteInternal::WriteUnqualifiedType<ByteOrder::LittleEndian>(stream, data, type);
+      case ByteOrder::BigEndian: return WriteInternal::WriteUnqualifiedType<ByteOrder::BigEndian>(stream, data, type);
       default: unreachable();
     }
   }
 
-  assetio::IOResult Write(assetio::IByteWriter& byte_writer,
-                          const Schema&         schema,
-                          const HashStr32       type_name,
-                          const void* const     data,
-                          const ByteOrder       byte_order)
+  binaryIO::IOErrorCode Write(binaryIO::IOStream* const stream,
+                              const Schema&             schema,
+                              const HashStr32           type_name,
+                              const void* const         data,
+                              const ByteOrder           byte_order)
   {
     const SchemaType* const type = schema.FindType(type_name);
 
@@ -999,17 +991,17 @@ namespace BinarySchema
     binaryIOAssert(type != nullptr, "Failed to find type.");
 #endif
 
-    return Write(byte_writer, *type, data, byte_order);
+    return Write(stream, *type, data, byte_order);
   }
 
   namespace ReadInternal
   {
     template<ByteOrder byte_order>
-    static assetio::IOResult ReadUnqualifiedType(assetio::IByteReader& byte_reader, IPolymorphicAllocator& memory, void* const data, const SchemaType& type);
+    static binaryIO::IOErrorCode ReadUnqualifiedType(binaryIO::IOStream* const stream, IPolymorphicAllocator& memory, void* const data, const SchemaType& type);
 
     template<ByteOrder byte_order>
-    static assetio::IOResult ReadQualifiedType(
-     assetio::IByteReader&     byte_reader,
+    static binaryIO::IOErrorCode ReadQualifiedType(
+     binaryIO::IOStream* const stream,
      IPolymorphicAllocator&    memory,
      const SchemaType&         parent_type,
      const void* const         parent_object,
@@ -1018,8 +1010,6 @@ namespace BinarySchema
      const TypeByteCode*       type_bytecode,
      const TypeByteCode* const type_bytecode_end)
     {
-      assetio::IOResult result = assetio::IOResult::Success;
-
       if (type_bytecode != type_bytecode_end)
       {
         const TypeConstructorByteCodeResult byte_code    = ByteCodeInternal::ReadTypeCtorBytecode<false>(type_bytecode, parent_type, parent_object);
@@ -1030,11 +1020,10 @@ namespace BinarySchema
 
         if (byte_code.flags & TypeConstructorFlags::HeapAllocated)
         {
-          std::uint8_t            is_non_null;
-          const assetio::IOResult io_result = byte_reader.read(&is_non_null, sizeof(is_non_null));
-          result += io_result;
+          std::uint8_t                is_non_null;
+          const binaryIO::IOErrorCode io_result = IOStream_Read(stream, &is_non_null, sizeof(is_non_null)).ErrorCode();
 
-          if (io_result != assetio::IOResult::Success)
+          if (io_result != binaryIO::IOErrorCode::Success)
           {
             is_non_null = false;
           }
@@ -1049,23 +1038,21 @@ namespace BinarySchema
           {
             void* const element = static_cast<char*>(write_location) + stride * i;
 
-            result += ReadQualifiedType<byte_order>(byte_reader, memory, parent_type, parent_object, element, base_type, type_bytecode, type_bytecode_end);
+            ReadQualifiedType<byte_order>(stream, memory, parent_type, parent_object, element, base_type, type_bytecode, type_bytecode_end);
           }
         }
       }
       else
       {
-        result += ReadUnqualifiedType<byte_order>(byte_reader, memory, data, base_type);
+        ReadUnqualifiedType<byte_order>(stream, memory, data, base_type);
       }
 
-      return result;
+      return stream->error_state;
     }
 
     template<ByteOrder byte_order>
-    static assetio::IOResult ReadUnqualifiedType(assetio::IByteReader& byte_reader, IPolymorphicAllocator& memory, void* const data, const SchemaType& type)
+    static binaryIO::IOErrorCode ReadUnqualifiedType(binaryIO::IOStream* const stream, IPolymorphicAllocator& memory, void* const data, const SchemaType& type)
     {
-      assetio::IOResult result = assetio::IOResult::Success;
-
       if (type.IsTrivial())
       {
         if (type.IsEndianDependent())
@@ -1073,43 +1060,39 @@ namespace BinarySchema
           // @ByteOrder
           if constexpr (byte_order == ByteOrder::Native)
           {
-            result += byte_reader.read(data, type.m_Size);
+            IOStream_Read(stream, data, type.m_Size);
           }
           else if constexpr (byte_order == ByteOrder::LittleEndian)
           {
-            result += [&]() -> assetio::IOResult {
-              switch (type.m_Size)
-              {
-                case 2u: return assetio::readLE(byte_reader, static_cast<std::uint16_t*>(data));
-                case 4u: return assetio::readLE(byte_reader, static_cast<std::uint32_t*>(data));
-                case 8u: return assetio::readLE(byte_reader, static_cast<std::uint64_t*>(data));
-                default: unreachable();
-              }
-            }();
+            switch (type.m_Size)
+            {
+              case 2u: readLE(stream, static_cast<std::uint16_t*>(data)); break;
+              case 4u: readLE(stream, static_cast<std::uint32_t*>(data)); break;
+              case 8u: readLE(stream, static_cast<std::uint64_t*>(data)); break;
+              default: unreachable();
+            }
           }
           else if constexpr (byte_order == ByteOrder::BigEndian)
           {
-            result += [&]() -> assetio::IOResult {
-              switch (type.m_Size)
-              {
-                case 2u: return assetio::readBE(byte_reader, static_cast<std::uint16_t*>(data));
-                case 4u: return assetio::readBE(byte_reader, static_cast<std::uint32_t*>(data));
-                case 8u: return assetio::readBE(byte_reader, static_cast<std::uint64_t*>(data));
-                default: unreachable();
-              }
-            }();
+            switch (type.m_Size)
+            {
+              case 2u: readBE(stream, static_cast<std::uint16_t*>(data)); break;
+              case 4u: readBE(stream, static_cast<std::uint32_t*>(data)); break;
+              case 8u: readBE(stream, static_cast<std::uint64_t*>(data)); break;
+              default: unreachable();
+            }
           }
         }
         else
         {
-          result += byte_reader.read(data, type.m_Size);
+          IOStream_Read(stream, data, type.m_Size);
         }
       }
       else
       {
         type.m_Members.ForEach([&](const BinarySchema::HashStr32 member_name, const BinarySchema::StructureMember& member) {
-          result += ReadQualifiedType<byte_order>(
-           byte_reader,
+          ReadQualifiedType<byte_order>(
+           stream,
            memory,
            type,
            data,
@@ -1120,32 +1103,32 @@ namespace BinarySchema
         });
       }
 
-      return result;
+      return stream->error_state;
     }
   }  // namespace ReadInternal
 
-  assetio::IOResult Read(assetio::IByteReader&  byte_reader,
-                         IPolymorphicAllocator& memory,
-                         const SchemaType&      type,
-                         void* const            data,
-                         const ByteOrder        byte_order)
+  binaryIO::IOErrorCode Read(binaryIO::IOStream* const stream,
+                             IPolymorphicAllocator&    memory,
+                             const SchemaType&         type,
+                             void* const               data,
+                             const ByteOrder           byte_order)
   {
     // @ByteOrder
     switch (byte_order)
     {
-      case ByteOrder::Native: return ReadInternal::ReadUnqualifiedType<ByteOrder::Native>(byte_reader, memory, data, type);
-      case ByteOrder::LittleEndian: return ReadInternal::ReadUnqualifiedType<ByteOrder::LittleEndian>(byte_reader, memory, data, type);
-      case ByteOrder::BigEndian: return ReadInternal::ReadUnqualifiedType<ByteOrder::BigEndian>(byte_reader, memory, data, type);
+      case ByteOrder::Native: return ReadInternal::ReadUnqualifiedType<ByteOrder::Native>(stream, memory, data, type);
+      case ByteOrder::LittleEndian: return ReadInternal::ReadUnqualifiedType<ByteOrder::LittleEndian>(stream, memory, data, type);
+      case ByteOrder::BigEndian: return ReadInternal::ReadUnqualifiedType<ByteOrder::BigEndian>(stream, memory, data, type);
       default: unreachable();
     }
   }
 
-  assetio::IOResult Read(assetio::IByteReader&  byte_reader,
-                         IPolymorphicAllocator& memory,
-                         const Schema&          schema,
-                         const HashStr32        type_name,
-                         void* const            data,
-                         const ByteOrder        byte_order)
+  binaryIO::IOErrorCode Read(binaryIO::IOStream* const stream,
+                             IPolymorphicAllocator&    memory,
+                             const Schema&             schema,
+                             const HashStr32           type_name,
+                             void* const               data,
+                             const ByteOrder           byte_order)
   {
     const SchemaType* const type = schema.FindType(type_name);
 
@@ -1153,7 +1136,7 @@ namespace BinarySchema
     binaryIOAssert(type != nullptr, "Failed to find type.");
 #endif
 
-    return Read(byte_reader, memory, *type, data, byte_order);
+    return Read(stream, memory, *type, data, byte_order);
   }
 
   namespace ConvertInternal
@@ -1318,16 +1301,16 @@ namespace BinarySchema
     return Convert(src_struct, *src_type, dst_struct, *dst_type, dst_memory);
   }
 
-  assetio::IOResult Upgrade(assetio::IByteReader&  byte_reader,
-                            IPolymorphicAllocator& memory,
-                            const SchemaType&      src_type,
-                            const SchemaType&      dst_type,
-                            void* const            dst_struct,
-                            const ByteOrder        byte_order)
+  binaryIO::IOErrorCode Upgrade(binaryIO::IOStream* const stream,
+                                IPolymorphicAllocator&    memory,
+                                const SchemaType&         src_type,
+                                const SchemaType&         dst_type,
+                                void* const               dst_struct,
+                                const ByteOrder           byte_order)
   {
     if (src_type == dst_type)
     {
-      return Read(byte_reader, memory, dst_type, dst_struct, byte_order);
+      return Read(stream, memory, dst_type, dst_struct, byte_order);
     }
     else
     {
@@ -1335,13 +1318,13 @@ namespace BinarySchema
 
       if (!src_struct_allocation)
       {
-        return assetio::IOResult::AllocationFailure;
+        return binaryIO::IOErrorCode::AllocationFailure;
       }
 
-      void* const             src_struct  = src_struct_allocation.ptr;
-      const assetio::IOResult read_result = Read(byte_reader, memory, src_type, src_struct, byte_order);
+      void* const                 src_struct  = src_struct_allocation.ptr;
+      const binaryIO::IOErrorCode read_result = Read(stream, memory, src_type, src_struct, byte_order);
 
-      if (read_result == assetio::IOResult::Success)
+      if (read_result == binaryIO::IOErrorCode::Success)
       {
         Convert(src_struct, src_type, dst_struct, dst_type, memory);
       }
@@ -1352,13 +1335,13 @@ namespace BinarySchema
     }
   }
 
-  assetio::IOResult Upgrade(assetio::IByteReader&  byte_reader,
-                            IPolymorphicAllocator& memory,
-                            const Schema&          src_schema,
-                            const Schema&          dst_schema,
-                            void* const            dst_struct,
-                            const HashStr32        type_name,
-                            const ByteOrder        byte_order)
+  binaryIO::IOErrorCode Upgrade(binaryIO::IOStream* const stream,
+                                IPolymorphicAllocator&    memory,
+                                const Schema&             src_schema,
+                                const Schema&             dst_schema,
+                                void* const               dst_struct,
+                                const HashStr32           type_name,
+                                const ByteOrder           byte_order)
   {
     const SchemaType* const src_type = src_schema.FindType(type_name);
     const SchemaType* const dst_type = dst_schema.FindType(type_name);
@@ -1368,7 +1351,7 @@ namespace BinarySchema
     binaryIOAssert(dst_type != nullptr, "Failed to find destination type.");
 #endif
 
-    return Upgrade(byte_reader, memory, *src_type, *dst_type, dst_struct, byte_order);
+    return Upgrade(stream, memory, *src_type, *dst_type, dst_struct, byte_order);
   }
 
   namespace FreeInternal
