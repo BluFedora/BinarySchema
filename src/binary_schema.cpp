@@ -10,7 +10,7 @@
  *     Heavily Inspired By : [https://github.com/RonPieket/StructuredBinary]
  *      Type System Basics : [https://karkare.github.io/cs335/lectures/12TypeSystem.pdf]
  *
- * @copyright Copyright (c) 2022-2023 Shareef Abdoul-Raheem
+ * @copyright Copyright (c) 2022-2025 Shareef Abdoul-Raheem
  */
 /******************************************************************************/
 #include "binary_schema.hpp"
@@ -619,7 +619,7 @@ namespace BinarySchema
 
   std::optional<Schema> SchemaBuilder::Build(void* const memory, const SchemaBuilderEndToken& end_token) const
   {
-    return BuildInternal(std::shared_ptr<byte[]>(reinterpret_cast<byte*>(memory), [](unsigned char* const) {}), end_token);
+    return BuildInternal(std::shared_ptr<byte[]>(static_cast<byte*>(memory), [](unsigned char* const) {}), end_token);
   }
 
   std::optional<Schema> SchemaBuilder::Build(IPolymorphicAllocator& allocator, const SchemaBuilderEndToken& end_token) const
@@ -1435,7 +1435,7 @@ namespace BinarySchema
 /*
   MIT License
 
-  Copyright (c) 2022-2023 Shareef Abdoul-Raheem
+  Copyright (c) 2022-2025 Shareef Abdoul-Raheem
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
