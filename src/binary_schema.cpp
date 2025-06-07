@@ -972,10 +972,10 @@ namespace BinarySchema
     // @ByteOrder
     switch (byte_order)
     {
-      case ByteOrder::Native: return WriteInternal::WriteUnqualifiedType<ByteOrder::Native>(stream, data, type);
+      case ByteOrder::Native:       return WriteInternal::WriteUnqualifiedType<ByteOrder::Native>(stream, data, type);
       case ByteOrder::LittleEndian: return WriteInternal::WriteUnqualifiedType<ByteOrder::LittleEndian>(stream, data, type);
-      case ByteOrder::BigEndian: return WriteInternal::WriteUnqualifiedType<ByteOrder::BigEndian>(stream, data, type);
-      default: unreachable();
+      case ByteOrder::BigEndian:    return WriteInternal::WriteUnqualifiedType<ByteOrder::BigEndian>(stream, data, type);
+      default:                      unreachable();
     }
   }
 
@@ -1116,10 +1116,10 @@ namespace BinarySchema
     // @ByteOrder
     switch (byte_order)
     {
-      case ByteOrder::Native: return ReadInternal::ReadUnqualifiedType<ByteOrder::Native>(stream, memory, data, type);
+      case ByteOrder::Native:       return ReadInternal::ReadUnqualifiedType<ByteOrder::Native>(stream, memory, data, type);
       case ByteOrder::LittleEndian: return ReadInternal::ReadUnqualifiedType<ByteOrder::LittleEndian>(stream, memory, data, type);
-      case ByteOrder::BigEndian: return ReadInternal::ReadUnqualifiedType<ByteOrder::BigEndian>(stream, memory, data, type);
-      default: unreachable();
+      case ByteOrder::BigEndian:    return ReadInternal::ReadUnqualifiedType<ByteOrder::BigEndian>(stream, memory, data, type);
+      default:                      unreachable();
     }
   }
 
