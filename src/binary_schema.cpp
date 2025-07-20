@@ -342,14 +342,14 @@ namespace BinarySchema
       if (result.header.version == SCHEMA_VERSION_INITIAL)
       {
         const size_t         data_bytes_size = result.header.data_size;
-        unsigned char* const data_bytes      = bfMemAllocateArray<unsigned char>(allocator, data_bytes_size);
+        unsigned char* const data_bytes      = MemAllocateArray<unsigned char>(allocator, data_bytes_size);
 
         if (data_bytes != nullptr)
         {
           result.data_bytes = std::shared_ptr<const unsigned char[]>(
            data_bytes,
            [allocator = &allocator, data_bytes_size](unsigned char* const ptr) {
-             bfMemDeallocateArray(*allocator, ptr, data_bytes_size);
+             MemDeallocateArray(*allocator, ptr, data_bytes_size);
            },
            Memory::StlAllocator<SchemaType>(allocator));
 
@@ -397,7 +397,7 @@ namespace BinarySchema
   template<typename T>
   T* SchemaBuilderList<T>::Append(const AllocatorView memory)
   {
-    T* const result = bfMemAllocateObject<T>(memory);
+    T* const result = MemAllocateT<T>(memory);
 
     if (result)
     {
@@ -426,7 +426,7 @@ namespace BinarySchema
     {
       T* const next = cursor->next;
 
-      bfMemDeallocateObject(memory, cursor);
+      MemDeallocateT(memory, cursor);
 
       cursor = next;
     }
@@ -481,7 +481,7 @@ namespace BinarySchema
     }
 #endif
 
-    SchemaBuilderTypeNode* const node = bfMemAllocateObject<SchemaBuilderTypeNode>(*m_Memory);
+    SchemaBuilderTypeNode* const node = MemAllocateT<SchemaBuilderTypeNode>(*m_Memory);
 
     binaryIOAssert(node != nullptr, "Allocation failure.");
 
@@ -637,7 +637,7 @@ namespace BinarySchema
       }
 
       type->members.Free(*m_Memory);
-      bfMemDeallocateObject(*m_Memory, std::exchange(type, type->next));
+      MemDeallocateT(*m_Memory, std::exchange(type, type->next));
     }
     m_TypeListHead = nullptr;
   }
@@ -1028,7 +1028,7 @@ namespace BinarySchema
             is_non_null = false;
           }
 
-          write_location                  = is_non_null ? bfMemAllocate(memory, num_elements * stride, base_type.m_Alignment) : (void*)nullptr;
+          write_location                  = is_non_null ? MemAllocate(memory, num_elements * stride, base_type.m_Alignment) : (void*)nullptr;
           *reinterpret_cast<void**>(data) = write_location;
         }
 
@@ -1204,7 +1204,7 @@ namespace BinarySchema
         {
           const bool is_fixed_size = dst_type_flags & TypeConstructorFlags::FixedSize;  // Fixed sized heap array are expected to always be a certain size.
 
-          write_location = read_location ? bfMemAllocate(dst_memory, (is_fixed_size ? dst_byte_code.num_elements : num_data_elements) * dst_stride, dst_type.m_Alignment) : (void*)nullptr;
+          write_location = read_location ? MemAllocate(dst_memory, (is_fixed_size ? dst_byte_code.num_elements : num_data_elements) * dst_stride, dst_type.m_Alignment) : (void*)nullptr;
 
           *reinterpret_cast<void**>(dst_object) = write_location;
         }
@@ -1314,7 +1314,7 @@ namespace BinarySchema
     }
     else
     {
-      const AllocationResult src_struct_allocation = bfMemAllocate(memory, src_type.m_Size, src_type.m_Alignment);
+      const AllocationResult src_struct_allocation = MemAllocate(memory, src_type.m_Size, src_type.m_Alignment);
 
       if (!src_struct_allocation)
       {
@@ -1330,7 +1330,7 @@ namespace BinarySchema
       }
 
       BinarySchema::FreeDynamicMemory(memory, src_type, src_struct);
-      bfMemDeallocate(memory, src_struct_allocation.ptr, src_struct_allocation.num_bytes, src_type.m_Alignment);
+      MemDeallocate(memory, src_struct_allocation.ptr, src_struct_allocation.num_bytes, src_type.m_Alignment);
       return read_result;
     }
   }
@@ -1387,7 +1387,7 @@ namespace BinarySchema
 
           if (is_heap_allocated)
           {
-            bfMemDeallocate(memory, data_location, num_elements * stride, base_type.m_Alignment);
+            MemDeallocate(memory, data_location, num_elements * stride, base_type.m_Alignment);
           }
         }
       }

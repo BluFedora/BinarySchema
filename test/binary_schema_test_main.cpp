@@ -8,7 +8,7 @@
 
 #include "binaryio/binary_stream_ext.hpp"  // byteWriterViewFromVector
 
-#include "memory/allocation.hpp"     // bfMemAllocate, bfMemDeallocate
+#include "memory/allocation.hpp"     // MemAllocate, MemDeallocate
 #include "memory/default_heap.hpp"   // DefaultHeap
 #include "memory/stl_allocator.hpp"  // StlAllocator
 
@@ -94,12 +94,12 @@ struct HeapAllocator
 {
   AllocationResult Allocate(const MemoryIndex size, MemoryIndex alignment, const AllocationSourceInfo& source_info)
   {
-    return (bfMemAllocate)(Memory::DefaultHeap(), size, alignment, source_info);
+    return MemAllocate(Memory::DefaultHeap(), size, alignment, source_info);
   };
 
   void Deallocate(void* const ptr, const MemoryIndex size, MemoryIndex alignment)
   {
-    return bfMemDeallocate(Memory::DefaultHeap(), ptr, size, alignment);
+    return MemDeallocate(Memory::DefaultHeap(), ptr, size, alignment);
   }
 };
 
