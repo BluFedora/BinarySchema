@@ -103,7 +103,7 @@ struct HeapAllocator
   }
 };
 
-struct ByteCountingAllocator : public Allocator<HeapAllocator, AllocationMarkPolicy::MARKED, BoundCheckingPolicy::CHECKED, ByteCounterTracking, Memory::NoLock>
+struct ByteCountingAllocator : public Allocator<HeapAllocator, AllocationMarkPolicy::MARKED, BoundCheckingPolicy::CHECKED, ByteCounterTracking>
 {
 };
 
