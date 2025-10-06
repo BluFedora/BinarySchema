@@ -32,14 +32,6 @@ target_link_libraries(
 set_property(TARGET AssetIO_BinarySchema PROPERTY FOLDER "BluFedora/AssetIO")
 
 if (BINARY_SCHEMA_UNIT_TESTS)
-  include(FetchContent)
-  FetchContent_Declare(
-    Catch2
-    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-    GIT_TAG        v3.7.0
-  )
-  FetchContent_MakeAvailable(Catch2)
-
   add_executable(
     BinarySchemaTest
       "test/binary_schema_test_main.cpp"
@@ -55,7 +47,5 @@ if (BINARY_SCHEMA_UNIT_TESTS)
   )
   set_property(TARGET BinarySchemaTest PROPERTY FOLDER "BluFedora/Test")
 
-  include(CTest)
-  include(Catch)
   catch_discover_tests(BinarySchemaTest)
 endif()
