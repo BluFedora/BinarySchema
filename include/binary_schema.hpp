@@ -203,7 +203,7 @@ namespace BinarySchema
     SCHEMA_VERSION_CURRENT = SCHEMA_VERSION_ONE_PAST_LAST - 1,  //!< Current version of the format.
   };
 
-  struct SchemaHeader : public binaryIO::BaseBinaryChunkHeader<SchemaHeader, SCHEMA_VERSION_CURRENT, binaryIO::MakeBinaryChunkTypeID("SBIN")>
+  struct SchemaHeader : public binaryIO::BaseBinaryChunkHeader<SchemaHeader, SCHEMA_VERSION_CURRENT, binaryIO::MakeChunkTypeID("SBIN")>
   {
     enum Flags : std::uint32_t
     {
