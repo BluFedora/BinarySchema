@@ -7,10 +7,10 @@
  *   backwards and forwards data compatibility.
  *
  *   References:
- *     Heavily Inspired By : [https://github.com/RonPieket/StructuredBinary]
+ *     [Developing Imperfect Software by Ron Pieket](https://media.gdcvault.com/gdc2012/slides/Programming%20Track/Pieket_Developing_Imperfect_Software.pdf) (Local Copy: presentations/Pieket_Developing_Imperfect_Software.pdf)
  *      Type System Basics : [https://karkare.github.io/cs335/lectures/12TypeSystem.pdf]
  *
- * @copyright Copyright (c) 2022-2023 Shareef Abdoul-Raheem
+ * @copyright Copyright (c) 2022-2026 Shareef Abdoul-Raheem
  */
 /******************************************************************************/
 #ifndef BINARY_SCHEMA_HPP
@@ -78,9 +78,6 @@ namespace BinarySchema
     binaryIO::rel_ptr32<T>         values;
     std::uint32_t                  size;
 
-    HashStr32Table()                          = default;
-    HashStr32Table(const HashStr32Table& rhs) = delete;
-
     template<typename F>
     void ForEach(F&& callback) const
     {
@@ -139,19 +136,15 @@ namespace BinarySchema
   struct StructureMember
   {
     binaryIO::rel_ptr32<const struct SchemaType> base_type;
-    HashStr32                                    base_type_name;
     binaryIO::rel_array32<TypeByteCode>          type_ctors;
     SizeType                                     offset;
-
-    StructureMember()                           = default;
-    StructureMember(const StructureMember& rhs) = delete;
 
     inline bool        HasQualifiers() const noexcept { return !type_ctors.isEmpty(); }
     inline void*       GetMemberData(void* const struct_ptr) const noexcept { return reinterpret_cast<byte*>(struct_ptr) + offset; }
     inline const void* GetMemberData(const void* const struct_ptr) const noexcept { return reinterpret_cast<const byte*>(struct_ptr) + offset; }
     bool               IsConvertCompatibleWith(const StructureMember& rhs) const noexcept;
   };
-  static_assert(sizeof(StructureMember) == 20u, "");
+  static_assert(sizeof(StructureMember) == 16u, "");
 
   enum class SchemaTypeFlags : std::uint16_t
   {
@@ -176,9 +169,6 @@ namespace BinarySchema
     std::uint16_t                   m_Alignment;
     SizeType                        m_Size;
     HashStr32Table<StructureMember> m_Members;
-
-    SchemaType()                      = default;
-    SchemaType(const SchemaType& rhs) = delete;
 
     bool             IsTrivial() const { return m_Flags & SchemaTypeFlags::IsTrivial; }
     bool             IsScalar() const { return m_Flags & SchemaTypeFlags::IsScalar; }
@@ -205,14 +195,7 @@ namespace BinarySchema
 
   struct SchemaHeader : public binaryIO::BaseBinaryChunkHeader<SchemaHeader, SCHEMA_VERSION_CURRENT, binaryIO::MakeChunkTypeID("SBIN")>
   {
-    enum Flags : std::uint32_t
-    {
-      None        = 0x0,       //!< No flags set.
-      TypesSorted = (1 << 0),  //!< Leads to faster type name lookup at the cost of a slower build step.
-    };
-
     std::uint32_t num_types = 0u;
-    std::uint32_t flags     = None;
 
     SchemaHeader() = default;
   };
@@ -363,12 +346,10 @@ namespace BinarySchema
     friend class SchemaBuilder;
 
     MemoryRequirements memory_requirements;
-    std::uint32_t      schema_flags;
 
    private:
-    SchemaBuilderEndToken(const MemoryRequirements num_bytes_needed, const std::uint32_t schema_flags) :
-      memory_requirements{num_bytes_needed},
-      schema_flags{schema_flags}
+    SchemaBuilderEndToken(const MemoryRequirements num_bytes_needed) :
+      memory_requirements{num_bytes_needed}
     {
     }
   };
@@ -396,7 +377,7 @@ namespace BinarySchema
 
     void                  Begin(IPolymorphicAllocator& working_memory);
     TypeBuilder           AddType(HashStr32 name, std::uint32_t size, std::uint32_t alignment, SchemaTypeFlags flags = SchemaTypeFlags::None);
-    SchemaBuilderEndToken End(const SchemaHeader::Flags flags = SchemaHeader::TypesSorted);
+    SchemaBuilderEndToken End();
 
     /*!
      * @brief
@@ -444,60 +425,24 @@ namespace BinarySchema
 
   // Goes from in memory to byte stream.
 
-  binaryIO::IOErrorCode Write(binaryIO::IOStream* const stream,
-                              const SchemaType&         type,
-                              const void* const         data,
-                              const ByteOrder           byte_order = ByteOrder::Native);
-  binaryIO::IOErrorCode Write(binaryIO::IOStream* const stream,
-                              const Schema&             schema,
-                              const HashStr32           type_name,
-                              const void* const         data,
-                              const ByteOrder           byte_order = ByteOrder::Native);
+  binaryIO::IOErrorCode Write(binaryIO::IOStream* const stream, const SchemaType& type, const void* const data, const ByteOrder byte_order = ByteOrder::Native);
+  binaryIO::IOErrorCode Write(binaryIO::IOStream* const stream, const Schema& schema, const HashStr32 type_name, const void* const data, const ByteOrder byte_order = ByteOrder::Native);
 
   // Goes from byte stream to in memory representation.
 
-  binaryIO::IOErrorCode Read(binaryIO::IOStream* const stream,
-                             IPolymorphicAllocator&    memory,
-                             const SchemaType&         type,
-                             void* const               data,
-                             const ByteOrder           byte_order = ByteOrder::Native);
-  binaryIO::IOErrorCode Read(binaryIO::IOStream* const stream,
-                             IPolymorphicAllocator&    memory,
-                             const Schema&             schema,
-                             const HashStr32           type_name,
-                             void* const               data,
-                             const ByteOrder           byte_order = ByteOrder::Native);
+  binaryIO::IOErrorCode Read(binaryIO::IOStream* const stream, IPolymorphicAllocator& memory, const SchemaType& type, void* const data, const ByteOrder byte_order = ByteOrder::Native);
+  binaryIO::IOErrorCode Read(binaryIO::IOStream* const stream, IPolymorphicAllocator& memory, const Schema& schema, const HashStr32 type_name, void* const data, const ByteOrder byte_order = ByteOrder::Native);
 
   // Convert from in memory to in memory across schemas.
-  // `src_struct` and `dst_struct` scalar variables expected to have the same endianness.
+  // `src_struct` and `dst_struct` expected to have the same endianness.
 
-  void Convert(const void* const      src_struct,
-               const SchemaType&      src_type,
-               void* const            dst_struct,
-               const SchemaType&      dst_type,
-               IPolymorphicAllocator& dst_memory);
-  void Convert(const void* const      src_struct,
-               const Schema&          src_schema,
-               void* const            dst_struct,
-               const Schema&          dst_schema,
-               IPolymorphicAllocator& dst_memory,
-               HashStr32              type_name);
+  void Convert(const void* const src_struct, const SchemaType& src_type, void* const dst_struct, const SchemaType& dst_type, IPolymorphicAllocator& dst_memory);
+  void Convert(const void* const src_struct, const Schema& src_schema, void* const dst_struct, const Schema& dst_schema, IPolymorphicAllocator& dst_memory, HashStr32 type_name);
 
   // Combined Read + Convert optimized for the case when the src_schema and dst_struct types are the same.
 
-  binaryIO::IOErrorCode Upgrade(binaryIO::IOStream* const stream,
-                                IPolymorphicAllocator&    memory,
-                                const SchemaType&         src_type,
-                                const SchemaType&         dst_type,
-                                void* const               dst_struct,
-                                const ByteOrder           byte_order = ByteOrder::Native);
-  binaryIO::IOErrorCode Upgrade(binaryIO::IOStream* const stream,
-                                IPolymorphicAllocator&    memory,
-                                const Schema&             src_schema,
-                                const Schema&             dst_schema,
-                                void* const               dst_struct,
-                                const HashStr32           type_name,
-                                const ByteOrder           byte_order = ByteOrder::Native);
+  binaryIO::IOErrorCode Upgrade(binaryIO::IOStream* const stream, IPolymorphicAllocator& memory, const SchemaType& src_type, const SchemaType& dst_type, void* const dst_struct, const ByteOrder byte_order = ByteOrder::Native);
+  binaryIO::IOErrorCode Upgrade(binaryIO::IOStream* const stream, IPolymorphicAllocator& memory, const Schema& src_schema, const Schema& dst_schema, void* const dst_struct, const HashStr32 type_name, const ByteOrder byte_order = ByteOrder::Native);
 
   // Frees any memory dynamically allocated from either a Read, Convert or Upgrade.
 
@@ -529,13 +474,225 @@ namespace BinarySchema
 #define BinarySchema_Member(member_name, member_type) \
   BinarySchema_MemberEx(member_name, #member_name, member_type)
 
+#include <type_traits>
+
+namespace bin_schema
+{
+  using BinarySchema::ArrayCountType;
+  using BinarySchema::HashStr32;
+  using BinarySchema::SizeType;
+  using BinarySchema::TypeConstructorFlags;
+
+#pragma region Builders
+
+  namespace build_internal
+  {
+    struct TempListChunk
+    {
+      void*          data     = nullptr;
+      std::uint32_t  size     = 0;
+      std::uint32_t  capacity = 0;
+      TempListChunk* next     = nullptr;
+    };
+
+    template<typename T>
+    struct TempList
+    {
+      TempListChunk* head_chunk = nullptr;
+      TempListChunk* tail_chunk = nullptr;
+      std::size_t    size       = 0u;
+
+      TempList(const TempList& rhs)            = default;
+      TempList(TempList&& rhs)                 = default;
+      TempList& operator=(const TempList& rhs) = default;
+      TempList& operator=(TempList&& rhs)      = default;
+      ~TempList()                              = default;
+    };
+
+    struct MemberQualifier
+    {
+      TypeConstructorFlags flags;
+      union
+      {
+        ArrayCountType fixed;
+        std::uint32_t  dynamic;
+
+      } num_elements;
+    };
+
+    template<typename T, typename CallbackFn>
+    void ForEach(const TempList<T>& list, CallbackFn&& Callback)
+    {
+      const TempListChunk* chunk        = list.head_chunk;
+      std::size_t          global_index = 0u;
+
+      while (chunk != nullptr)
+      {
+        const std::size_t          chunk_size = chunk->size;
+        const TempListChunk* const chunk_next = chunk->next;
+        T* const                   chunk_data = static_cast<T*>(chunk->data);
+
+        for (std::size_t local_index = 0u; local_index < chunk_size; ++local_index)
+        {
+          Callback(global_index + local_index, chunk_data[local_index]);
+        }
+
+        global_index += chunk_size;
+        chunk         = chunk_next;
+      }
+    }
+  }
+
+  struct TypeBuilder
+  {
+    void MarkAsTrivial();
+
+    template<typename ClassType, typename MemberType>
+    void AddMember(const BinarySchema::HashStr32 member_name, MemberType ClassType::* member_ptr);
+  };
+
+#pragma endregion
+
+  template<typename T>
+  struct Info;
+
+  template<typename T>
+  void RegisterSchema(BinarySchema::TypeBuilder& type_builder);
+
+  // clang-format off
+  template<> struct Info<bool>          { static constexpr const BinarySchema::HashStr32 TypeName = "bool"; };
+  template<> struct Info<char>          { static constexpr const BinarySchema::HashStr32 TypeName = "char"; };
+  template<> struct Info<std::uint8_t>  { static constexpr const BinarySchema::HashStr32 TypeName = "u8";   };
+  template<> struct Info<std::uint16_t> { static constexpr const BinarySchema::HashStr32 TypeName = "u16";  };
+  template<> struct Info<std::uint32_t> { static constexpr const BinarySchema::HashStr32 TypeName = "u32";  };
+  template<> struct Info<std::uint64_t> { static constexpr const BinarySchema::HashStr32 TypeName = "u64";  };
+  template<> struct Info<std::int8_t>   { static constexpr const BinarySchema::HashStr32 TypeName = "i8";   };
+  template<> struct Info<std::int16_t>  { static constexpr const BinarySchema::HashStr32 TypeName = "i16";  };
+  template<> struct Info<std::int32_t>  { static constexpr const BinarySchema::HashStr32 TypeName = "i32";  };
+  template<> struct Info<std::int64_t>  { static constexpr const BinarySchema::HashStr32 TypeName = "i64";  };
+  template<> struct Info<float>         { static constexpr const BinarySchema::HashStr32 TypeName = "flt";  };
+  template<> struct Info<double>        { static constexpr const BinarySchema::HashStr32 TypeName = "dbl";  };
+  // template<> struct Info<long double>   { static constexpr const BinarySchema::HashStr32 TypeName = "f64x"; };
+  // clang-format on
+
+  template<auto CountMember, typename T>
+  struct DynArray
+  {
+    T* data = nullptr;
+  };
+
+  template<typename T, std::size_t N>
+  struct FixedArray
+  {
+    T* data = nullptr;
+  };
+
+  namespace emit_internal
+  {
+    template<typename T, bool IsEnum = std::is_enum_v<T>>
+    struct EnumType;
+
+    template<typename T>
+    struct EnumType<T, false>
+    {
+      using type = T;
+    };
+
+    template<typename T>
+    struct EnumType<T, true>
+    {
+      using type = std::underlying_type_t<T>;
+    };
+
+    template<typename T>
+    using EnumTypeT = typename EnumType<T>::type;
+
+    template<typename T>
+    using StripType = std::remove_cv_t<std::remove_reference_t<EnumTypeT<T>>>;
+
+    template<typename T, typename M>
+    constexpr std::size_t offset_of(M T::* member)
+    {
+      return reinterpret_cast<std::size_t>(&(reinterpret_cast<T const volatile*>(0)->*member));
+    }
+  }
+
+  template<typename T>
+  struct Emit_MemberBuilder
+  {
+    static void Emit(BinarySchema::MemberBuilder& member_builder)
+    {
+    }
+  };
+
+  template<typename T>
+  struct Emit_MemberBuilder<T*>
+  {
+    static void Emit(BinarySchema::MemberBuilder& member_builder)
+    {
+      member_builder.Pointer();
+      Emit_MemberBuilder<emit_internal::StripType<T>>::Emit(member_builder);
+    }
+  };
+
+  template<typename T, std::size_t N>
+  struct Emit_MemberBuilder<T[N]>
+  {
+    static void Emit(BinarySchema::MemberBuilder& member_builder)
+    {
+      member_builder.Array(N);
+      Emit_MemberBuilder<emit_internal::StripType<T>>::Emit(member_builder);
+    }
+  };
+
+  template<typename T, std::size_t N>
+  struct Emit_MemberBuilder<FixedArray<T, N>>
+  {
+    static void Emit(BinarySchema::MemberBuilder& member_builder)
+    {
+      member_builder.FixedHeap(N);
+      Emit_MemberBuilder<emit_internal::StripType<T>>::Emit(member_builder);
+    }
+  };
+
+  template<auto CountMember, typename T>
+  struct Emit_MemberBuilder<DynArray<CountMember, T>>
+  {
+    static void Emit(BinarySchema::MemberBuilder& member_builder)
+    {
+      member_builder.Array(emit_internal::offset_of(CountMember));
+      Emit_MemberBuilder<emit_internal::StripType<T>>::Emit(member_builder);
+    }
+  };
+
+  template<typename ClassType, typename MemberType>
+  static void AddMember(BinarySchema::TypeBuilder& type_builder, const BinarySchema::HashStr32 member_name, MemberType ClassType::* member_ptr)
+  {
+    using RawMemberType = emit_internal::StripType<MemberType>;
+
+    BinarySchema::MemberBuilder member_builder = type_builder.AddMember(member_name, Info<RawMemberType>::TypeName, emit_internal::offset_of(member_ptr));
+
+    Emit_MemberBuilder<RawMemberType>::Emit(member_builder);
+  }
+
+  template<typename ClassType, typename MemberType>
+  void TypeBuilder::AddMember(const BinarySchema::HashStr32 member_name, MemberType ClassType::* member_ptr)
+  {
+    using RawMemberType = emit_internal::StripType<MemberType>;
+
+    // BinarySchema::MemberBuilder member_builder = type_builder.AddMember(member_name, Info<RawMemberType>::TypeName, emit_internal::offset_of(member_ptr));
+
+    // Emit_MemberBuilder<RawMemberType>::Emit(member_builder);
+  }
+}
+
 #endif /* BINARY_SCHEMA_HPP */
 
 /******************************************************************************/
 /*
   MIT License
 
-  Copyright (c) 2022-2023 Shareef Abdoul-Raheem
+  Copyright (c) 2022-2026 Shareef Abdoul-Raheem
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal

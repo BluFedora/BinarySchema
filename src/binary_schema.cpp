@@ -7,10 +7,10 @@
  *   backwards and forwards data compatibility.
  *
  *   References:
- *     Heavily Inspired By : [https://github.com/RonPieket/StructuredBinary]
+ *     [Developing Imperfect Software by Ron Pieket](https://media.gdcvault.com/gdc2012/slides/Programming%20Track/Pieket_Developing_Imperfect_Software.pdf) (Local Copy: presentations/Pieket_Developing_Imperfect_Software.pdf)
  *      Type System Basics : [https://karkare.github.io/cs335/lectures/12TypeSystem.pdf]
  *
- * @copyright Copyright (c) 2022-2025 Shareef Abdoul-Raheem
+ * @copyright Copyright (c) 2022-2026 Shareef Abdoul-Raheem
  */
 /******************************************************************************/
 #include "binary_schema.hpp"
@@ -101,7 +101,7 @@ namespace BinarySchema
         std::memcpy(&src_hash_str, src + src_byte_code_index, sizeof(src_hash_str));
         std::memcpy(&dst_hash_str, dst + dst_byte_code_index, sizeof(dst_hash_str));
 
-        if (BINARY_SCHEMA_VERIFY_PRINT(src_hash_str != dst_hash_str))
+        if (src_hash_str != dst_hash_str)
         {
           return false;
         }
@@ -111,7 +111,7 @@ namespace BinarySchema
       dst_byte_code_index += sizeof(std::uint32_t) * !ByteCodeHasSmallSize(dst_flags);
     }
 
-    if (BINARY_SCHEMA_VERIFY_PRINT(src_byte_code_index != num_src_bytes) || BINARY_SCHEMA_VERIFY_PRINT(dst_byte_code_index != num_dst_bytes))
+    if ((src_byte_code_index != num_src_bytes) || (dst_byte_code_index != num_dst_bytes))
     {
       return false;
     }
@@ -284,11 +284,11 @@ namespace BinarySchema
 
   bool StructureMember::IsConvertCompatibleWith(const StructureMember& rhs) const noexcept
   {
-    return base_type_name == rhs.base_type_name && ByteCodeIsConvertCompatible(
-                                                    type_ctors.begin(),
-                                                    type_ctors.num_elements,
-                                                    rhs.type_ctors.begin(),
-                                                    rhs.type_ctors.num_elements);
+    return base_type == rhs.base_type && ByteCodeIsConvertCompatible(
+                                          type_ctors.begin(),
+                                          type_ctors.num_elements,
+                                          rhs.type_ctors.begin(),
+                                          rhs.type_ctors.num_elements);
   }
 
   StructureMember* SchemaType::FindMember(const HashStr32 name) const
@@ -305,23 +305,9 @@ namespace BinarySchema
   {
     const auto types     = Types();
     const auto types_end = types + header.num_types;
+    const auto it        = std::lower_bound(types, types_end, name, [](const SchemaType& a, const HashStr32& b) -> bool { return a.m_Name.hash < b.hash; });
 
-    if (header.flags & SchemaHeader::TypesSorted)
-    {
-      const auto it = std::lower_bound(types, types_end, name, [](const SchemaType& a, const HashStr32& b) -> bool {
-        return a.m_Name.hash < b.hash;
-      });
-
-      return (it == types_end || it->m_Name != name) ? nullptr : types + std::distance(types, it);
-    }
-    else
-    {
-      const auto it = std::find_if(types, types_end, [name](const SchemaType& type) -> bool {
-        return type.m_Name == name;
-      });
-
-      return it != types_end ? it : nullptr;
-    }
+    return (it == types_end || it->m_Name != name) ? nullptr : types + std::distance(types, it);
   }
 
   binaryIO::IOErrorCode Schema::Write(binaryIO::IOStream* const stream) const
@@ -341,19 +327,14 @@ namespace BinarySchema
     {
       if (result.header.version == SCHEMA_VERSION_INITIAL)
       {
-        const size_t         data_bytes_size = result.header.data_size;
-        unsigned char* const data_bytes      = MemAllocateArray<unsigned char>(allocator, data_bytes_size);
+        const size_t            data_bytes_size = result.header.data_size;
+        const SharedPtr<byte[]> data_bytes      = bfMemMakeShared<byte[]>(&allocator, data_bytes_size);
 
         if (data_bytes != nullptr)
         {
-          result.data_bytes = std::shared_ptr<const unsigned char[]>(
-           data_bytes,
-           [allocator = &allocator, data_bytes_size](unsigned char* const ptr) {
-             MemDeallocateArray(*allocator, ptr, data_bytes_size);
-           },
-           Memory::StlAllocator<SchemaType>(allocator));
+          result.data_bytes = data_bytes;
 
-          if (IOStream_Read(stream, data_bytes, data_bytes_size).ErrorCode() == binaryIO::IOErrorCode::Success)
+          if (IOStream_Read(stream, data_bytes.get(), data_bytes_size).ErrorCode() == binaryIO::IOErrorCode::Success)
           {
             if (VerifySchema(result))
             {
@@ -515,71 +496,6 @@ namespace BinarySchema
     return byte_code_size;
   }
 
-  namespace MergeSortInternal
-  {
-    template<typename TNode>
-    static void SplitList(TNode* list, TNode** out_front, TNode** out_back)
-    {
-      TNode* fast      = list;
-      TNode* slow      = list;
-      TNode* front_end = nullptr;
-
-      while (fast && fast->next)
-      {
-        front_end = slow;
-        slow      = slow->next;
-        fast      = fast->next->next;
-      }
-
-      *out_front = list;
-      *out_back  = slow;
-
-      front_end->next = nullptr;
-    }
-
-    template<typename TNode, typename Cmp>
-    static TNode* SortedMerge(TNode* a, TNode* b, Cmp&& predicate)
-    {
-      if (!a) { return b; }
-      if (!b) { return a; }
-
-      TNode* result = nullptr;
-
-      if (predicate(a, b))
-      {
-        result       = a;
-        result->next = SortedMerge(a->next, b, predicate);
-      }
-      else
-      {
-        result       = b;
-        result->next = SortedMerge(a, b->next, predicate);
-      }
-
-      return result;
-    }
-  }  // namespace MergeSortInternal
-
-  template<typename TNode, typename Cmp>
-  static void MergeSortLinkList(TNode** list_head, Cmp&& predicate)
-  {
-    TNode* const head = *list_head;
-
-    // Base case of 0 or one items.
-    if (head == nullptr || head->next == nullptr)
-    {
-      return;
-    }
-
-    TNode *list_front, *list_back;
-    MergeSortInternal::SplitList(head, &list_front, &list_back);
-
-    MergeSortLinkList(&list_front, predicate);
-    MergeSortLinkList(&list_back, predicate);
-
-    *list_head = MergeSortInternal::SortedMerge(list_front, list_back, predicate);
-  }
-
   template<typename T>
   static std::size_t GetDynamicMemoryUsage(const std::size_t size)
   {
@@ -588,15 +504,8 @@ namespace BinarySchema
     return (sizeof(HashStr32) + sizeof(T)) * size;
   }
 
-  SchemaBuilderEndToken SchemaBuilder::End(const SchemaHeader::Flags flags)
+  SchemaBuilderEndToken SchemaBuilder::End()
   {
-    if ((flags & SchemaHeader::TypesSorted) != 0u)
-    {
-      MergeSortLinkList(&m_TypeListHead, [](const SchemaBuilderTypeNode* a, const SchemaBuilderTypeNode* b) {
-        return a->name.hash < b->name.hash;
-      });
-    }
-
     MemoryRequirements memory_requirements = {};
 
     memory_requirements.Append<SchemaType>(m_NumTypes);
@@ -614,7 +523,7 @@ namespace BinarySchema
       }
     }
 
-    return SchemaBuilderEndToken(memory_requirements, flags);
+    return SchemaBuilderEndToken(memory_requirements);
   }
 
   std::optional<Schema> SchemaBuilder::Build(void* const memory, const SchemaBuilderEndToken& end_token) const
@@ -651,7 +560,7 @@ namespace BinarySchema
       const MemoryRequirements& memory_requirements = end_token.memory_requirements;
 
 #if BINARY_SCHEMA_BUILD_VALIDATION
-      binaryIOAssert(memory_requirements.IsBufferValid(data_buffer.get(), memory_requirements.size), "Data buffer is not properly aligned.");
+      binaryIOAssert(memory_requirements.IsBufferValid(bytes_current, memory_requirements.size), "Data buffer is not properly aligned.");
 #endif
 
       const void* const memory_end = bytes_current + memory_requirements.size;
@@ -662,24 +571,32 @@ namespace BinarySchema
       schema.header.type_id   = SchemaHeader::ChunkID;
       schema.header.data_size = memory_requirements.size;
       schema.header.num_types = num_types;
-      schema.header.flags     = end_token.schema_flags;
       schema.data_bytes       = std::move(data_buffer);
 
-      SchemaType* const types        = MemoryRequirements::Alloc<SchemaType>(&bytes_current, memory_end, num_types);
-      SchemaType*       types_cursor = types;
+      SchemaType* const types = MemoryRequirements::Alloc<SchemaType>(&bytes_current, memory_end, num_types);
 
+      SchemaType* types_cursor = types;
       for (const SchemaBuilderTypeNode* src_type = m_TypeListHead; src_type; src_type = src_type->next)
       {
-        SchemaType* const                      dst_type    = types_cursor++;
-        HashStr32Table<StructureMember>* const dst_members = &dst_type->m_Members;
+        SchemaType* const dst_type = types_cursor++;
 
         dst_type->m_Name      = src_type->name;
         dst_type->m_Flags     = src_type->flags;
         dst_type->m_Size      = src_type->size;
         dst_type->m_Alignment = src_type->alignment;
-        dst_members->size     = src_type->members.num_elements;
-        dst_members->keys     = MemoryRequirements::Alloc<HashStr32>(&bytes_current, memory_end, dst_members->size);
-        dst_members->values   = MemoryRequirements::Alloc<StructureMember>(&bytes_current, memory_end, dst_members->size);
+      }
+
+      std::sort(types, types + num_types, [](const SchemaType& lhs, const SchemaType& rhs) -> bool { return lhs.m_Name.hash < rhs.m_Name.hash; });
+
+      types_cursor = types;
+      for (const SchemaBuilderTypeNode* src_type = m_TypeListHead; src_type; src_type = src_type->next)
+      {
+        SchemaType* const                      dst_type    = types_cursor++;
+        HashStr32Table<StructureMember>* const dst_members = &dst_type->m_Members;
+
+        dst_members->size   = src_type->members.num_elements;
+        dst_members->keys   = MemoryRequirements::Alloc<HashStr32>(&bytes_current, memory_end, dst_members->size);
+        dst_members->values = MemoryRequirements::Alloc<StructureMember>(&bytes_current, memory_end, dst_members->size);
 
         HashStr32*       member_keys_cursor   = dst_members->keys.get();
         StructureMember* member_values_cursor = dst_members->values.get();
@@ -691,17 +608,14 @@ namespace BinarySchema
           const std::uint32_t byte_code_size = CountByteCodeSize(src_member->qualifiers);
 
           *dst_key_member                         = src_member->name;
-          dst_val_member->base_type_name          = src_member->base_type;
-          dst_val_member->base_type               = nullptr;  // will be patched in second pass.
+          dst_val_member->base_type               = schema.FindType(src_member->base_type);
           dst_val_member->type_ctors.elements     = MemoryRequirements::Alloc<TypeByteCode>(&bytes_current, memory_end, byte_code_size);
           dst_val_member->type_ctors.num_elements = byte_code_size;
           dst_val_member->offset                  = src_member->offset;
 
           TypeByteCode* byte_code_write_ptr = dst_val_member->type_ctors.begin();
 
-          for (const SchemaBuilderMemberQualifier* qualifier = src_member->qualifiers.head;
-               qualifier != nullptr;
-               qualifier = qualifier->next)
+          for (const SchemaBuilderMemberQualifier* qualifier = src_member->qualifiers.head; qualifier != nullptr; qualifier = qualifier->next)
           {
             *byte_code_write_ptr++ = static_cast<TypeByteCode>(qualifier->flags);
 
@@ -714,24 +628,12 @@ namespace BinarySchema
         }
       }
 
-      // Patch in member base_type's now that all types registered.
-      for (std::size_t type_index = 0u; type_index < num_types; ++type_index)
-      {
-        const SchemaType& type        = types[type_index];
-        const std::size_t num_members = type.m_Members.size;
-
-        for (std::size_t member_index = 0u; member_index < num_members; ++member_index)
-        {
-          StructureMember& member = type.m_Members.values[member_index];
-
-          member.base_type = schema.FindType(member.base_type_name);
-        }
-      }
-
 #if BINARY_SCHEMA_BUILD_VALIDATION
       if (VerifySchema(schema))
 #endif
+      {
         return schema;
+      }
     }
 
     return std::nullopt;
@@ -854,8 +756,10 @@ namespace BinarySchema
 
         return byte_code.num_elements * base_size;
       }
-
-      return base_type.m_Size;
+      else
+      {
+        return base_type.m_Size;
+      }
     }
   }  // namespace ByteCodeInternal
 
@@ -888,7 +792,7 @@ namespace BinarySchema
           IOStream_Write(stream, &is_non_null, sizeof(is_non_null));
         }
 
-        if (data_location)
+        if (data_location != nullptr)
         {
           const SizeType stride = ByteCodeInternal::GetTypeSize<false>(parent_type, parent_object, base_type, type_bytecode, type_bytecode_end);
 
@@ -1202,9 +1106,10 @@ namespace BinarySchema
 
         if (dst_type_flags & TypeConstructorFlags::HeapAllocated)
         {
-          const bool is_fixed_size = dst_type_flags & TypeConstructorFlags::FixedSize;  // Fixed sized heap array are expected to always be a certain size.
+          const bool        is_fixed_size   = dst_type_flags & TypeConstructorFlags::FixedSize;  // Fixed sized heap array are expected to always be a certain size.
+          const MemoryIndex allocation_size = static_cast<MemoryIndex>(is_fixed_size ? dst_byte_code.num_elements : num_data_elements) * dst_stride;
 
-          write_location = read_location ? MemAllocate(dst_memory, (is_fixed_size ? dst_byte_code.num_elements : num_data_elements) * dst_stride, dst_type.m_Alignment) : (void*)nullptr;
+          write_location = (read_location && allocation_size != 0) ? MemAllocate(dst_memory, allocation_size, dst_type.m_Alignment) : (void*)nullptr;
 
           *reinterpret_cast<void**>(dst_object) = write_location;
         }
@@ -1435,7 +1340,7 @@ namespace BinarySchema
 /*
   MIT License
 
-  Copyright (c) 2022-2025 Shareef Abdoul-Raheem
+  Copyright (c) 2022-2026 Shareef Abdoul-Raheem
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
