@@ -36,9 +36,7 @@
 
 namespace BinarySchema
 {
-  //
-  // ByteCode
-  //
+  // ByteCode //
 
   static inline TypeByteCode operator&(const TypeConstructorFlags lhs, const TypeConstructorFlags rhs)
   {
@@ -82,11 +80,7 @@ namespace BinarySchema
 #define BINARY_SCHEMA_VERIFY_PRINT(...)
 #endif
 
-  static inline bool ByteCodeIsConvertCompatible(
-   const TypeByteCode* const src,
-   const std::uint32_t       num_src_bytes,
-   const TypeByteCode* const dst,
-   const std::uint32_t       num_dst_bytes)
+  inline static bool ByteCodeIsConvertCompatible(const TypeByteCode* const src, const std::uint32_t num_src_bytes, const TypeByteCode* const dst, const std::uint32_t num_dst_bytes)
   {
     std::uint32_t src_byte_code_index = 0u;
     std::uint32_t dst_byte_code_index = 0u;
@@ -123,16 +117,16 @@ namespace BinarySchema
   // Schema Pointer Verification
   //
 
-  static bool VerifyPointer(const void* const pointer, const unsigned char* const data_block, const std::uint64_t data_block_size)
+  static bool VerifyPointer(const void* const pointer, const void* const data_block, const std::uint64_t data_block_size)
   {
     if (pointer != nullptr)
     {
-      if (BINARY_SCHEMA_VERIFY_PRINT(reinterpret_cast<const unsigned char*>(pointer) < data_block))
+      if (BINARY_SCHEMA_VERIFY_PRINT(static_cast<const byte*>(pointer) < static_cast<const byte*>(data_block)))
       {
         return false;
       }
 
-      if (BINARY_SCHEMA_VERIFY_PRINT(reinterpret_cast<const unsigned char*>(pointer) > (data_block + data_block_size)))
+      if (BINARY_SCHEMA_VERIFY_PRINT(static_cast<const byte*>(pointer) > (static_cast<const byte*>(data_block) + data_block_size)))
       {
         return false;
       }
@@ -142,19 +136,19 @@ namespace BinarySchema
   }
 
   template<typename offset_type_t, typename T, std::uint8_t alignment>
-  static bool VerifyRelPointer(const binaryIO::rel_ptr<offset_type_t, T, alignment>& pointer, const unsigned char* const data_block, const std::uint64_t data_block_size)
+  static bool VerifyRelPointer(const binaryIO::rel_ptr<offset_type_t, T, alignment>& pointer, const void* const data_block, const std::uint64_t data_block_size)
   {
     return VerifyPointer(pointer.get(), data_block, data_block_size);
   }
 
   template<typename TCount, typename TPtr>
-  static bool VerifyRelArray(const binaryIO::rel_array<TCount, TPtr>& arr, const unsigned char* const data_block, const std::uint64_t data_block_size)
+  static bool VerifyRelArray(const binaryIO::rel_array<TCount, TPtr>& arr, const void* const data_block, const std::uint64_t data_block_size)
   {
     return VerifyPointer(arr.begin(), data_block, data_block_size) &&
            VerifyPointer(arr.end(), data_block, data_block_size);
   }
 
-  static bool VerifyTypeByteCode(const SchemaType& type, const binaryIO::rel_array32<TypeByteCode>& byte_code, const unsigned char* const data_block, const std::uint64_t data_block_size)
+  static bool VerifyTypeByteCode(const SchemaType& type, const binaryIO::rel_array32<TypeByteCode>& byte_code, const void* const data_block, const std::uint64_t data_block_size)
   {
     if (!VerifyRelArray(byte_code, data_block, data_block_size))
     {
@@ -181,7 +175,6 @@ namespace BinarySchema
           HashStr32 member_hash_str;
           std::memcpy(&member_hash_str, byte_code_ptr, sizeof(member_hash_str));
 
-          // The dynamic size must exist and be an unqualified integer type.
           const StructureMember* const dynamic_val = type.FindMember(member_hash_str);
           binaryIOAssert(dynamic_val, "Failed to find dynamic member.");
 
@@ -205,32 +198,38 @@ namespace BinarySchema
     return byte_code_ptr == byte_code_end;
   }
 
-  static bool VerifyStructureMember(const SchemaType& type, const StructureMember& member, const unsigned char* const data_block, const std::uint64_t data_block_size)
+  static bool VerifyStructureMember(const SchemaType& type, const StructureMember& member, const void* const data_block, const std::uint64_t data_block_size)
   {
-    return VerifyRelPointer(member.base_type, data_block, data_block_size) && VerifyTypeByteCode(type, member.type_ctors, data_block, data_block_size);
+    if (BINARY_SCHEMA_VERIFY_PRINT(member.base_type.get() == nullptr))
+    {
+      return false;
+    }
+
+    return VerifyRelPointer(member.base_type, data_block, data_block_size) &&
+           VerifyTypeByteCode(type, member.type_ctors, data_block, data_block_size);
   }
 
-  static bool VerifySchemaType(const SchemaType& type, const unsigned char* const data_block, const std::uint64_t data_block_size)
+  static bool VerifySchemaType(const SchemaType& type, const void* const data_block, const std::uint64_t data_block_size)
   {
-    const std::size_t num_members = type.m_Members.size;
+    if (!VerifyRelPointer(type.m_Name.debug_name, data_block, data_block_size))
+    {
+      return false;
+    }
 
-    if (!VerifyRelPointer(type.m_Members.keys, data_block, data_block_size) ||
-        !VerifyPointer(type.m_Members.keys.get() + num_members, data_block, data_block_size) ||
-        !VerifyRelPointer(type.m_Members.values, data_block, data_block_size) ||
-        !VerifyPointer(type.m_Members.values.get() + num_members, data_block, data_block_size))
+    if (!VerifyRelArray(type.m_Members, data_block, data_block_size))
     {
       return false;
     }
 
     return std::all_of(
-     type.m_Members.values.get(),
-     type.m_Members.values.get() + num_members,
+     type.m_Members.begin(),
+     type.m_Members.end(),
      [&](const StructureMember& member) -> bool {
        return VerifyStructureMember(type, member, data_block, data_block_size);
      });
   }
 
-  static bool VerifySchemaTypes(const SchemaType* types, const std::uint32_t num_types, const unsigned char* const data_block, const std::uint64_t data_block_size)
+  static bool VerifySchemaTypes(const SchemaType* types, const std::uint64_t num_types, const void* const data_block, const std::uint64_t data_block_size)
   {
     return std::all_of(types, types + num_types, [&](const SchemaType& type) -> bool {
       return VerifySchemaType(type, data_block, data_block_size);
@@ -239,39 +238,29 @@ namespace BinarySchema
 
   static bool VerifySchema(const Schema& schema)
   {
-    const SchemaHeader& header = schema.header;
-
-    if (BINARY_SCHEMA_VERIFY_PRINT(header.type_id != SchemaHeader::ChunkID))
+    if (BINARY_SCHEMA_VERIFY_PRINT(schema.type_id != SchemaHeader::ChunkID))
     {
       return false;
     }
 
-    if (BINARY_SCHEMA_VERIFY_PRINT(header.header_size != sizeof(SchemaHeader)))
+    if (BINARY_SCHEMA_VERIFY_PRINT(schema.header_size != sizeof(SchemaHeader)))
     {
       return false;
     }
 
-    return VerifySchemaTypes(schema.Types(), header.num_types, schema.data_bytes.get(), header.data_size);
+    return VerifySchemaTypes(schema.types.get(), schema.num_types, schema.types.get(), schema.data_size);
   }
 
   //
   // Schema API
   //
 
-  template<typename T>
-  static inline bool operator==(const HashStr32Table<T>& lhs, const HashStr32Table<T>& rhs)
-  {
-    return lhs.size == rhs.size &&
-           std::memcmp(lhs.keys.get(), rhs.keys.get(), lhs.size * sizeof(HashStr32)) == 0 &&
-           std::equal(lhs.values.get(), lhs.values.get() + lhs.size, rhs.values.get());
-  }
-
   bool operator==(const SchemaType& lhs, const SchemaType& rhs)
   {
     return lhs.m_Size == rhs.m_Size &&
            lhs.m_Alignment == rhs.m_Alignment &&
            lhs.m_Flags == rhs.m_Flags &&
-           lhs.m_Members == rhs.m_Members;
+           std::memcmp(lhs.m_Members.begin(), rhs.m_Members.begin(), lhs.m_Members.num_elements) == 0;
   }
 
   static inline bool operator==(const StructureMember& lhs, const StructureMember& rhs)
@@ -291,369 +280,26 @@ namespace BinarySchema
                                           rhs.type_ctors.num_elements);
   }
 
-  StructureMember* SchemaType::FindMember(const HashStr32 name) const
+  const StructureMember* SchemaType::FindMember(const HashStr32 name) const
   {
-    return m_Members.Find(name);
-  }
+    for (const StructureMember& member : m_Members)
+    {
+      if (member.name.hash == name.hash)
+      {
+        return &member;
+      }
+    }
 
-  const SchemaType* Schema::Types() const
-  {
-    return reinterpret_cast<const SchemaType*>(data_bytes.get());
+    return nullptr;
   }
 
   const SchemaType* Schema::FindType(const HashStr32 name) const
   {
-    const auto types     = Types();
-    const auto types_end = types + header.num_types;
+    const auto types     = this->types.get();
+    const auto types_end = types + num_types;
     const auto it        = std::lower_bound(types, types_end, name, [](const SchemaType& a, const HashStr32& b) -> bool { return a.m_Name.hash < b.hash; });
 
-    return (it == types_end || it->m_Name != name) ? nullptr : types + std::distance(types, it);
-  }
-
-  binaryIO::IOErrorCode Schema::Write(binaryIO::IOStream* const stream) const
-  {
-    binaryIO::IOErrorCode result = binaryIO::IOErrorCode::Success;
-
-    IOStream_Write(stream, &header, sizeof(SchemaHeader));
-    IOStream_Write(stream, data_bytes.get(), header.data_size);
-
-    return stream->error_state;
-  }
-
-  std::optional<Schema> Schema::Load(binaryIO::IOStream* const stream, IPolymorphicAllocator& allocator)
-  {
-    Schema result;
-    if (IOStream_Read(stream, &result.header, sizeof(SchemaHeader)).ErrorCode() == binaryIO::IOErrorCode::Success)
-    {
-      if (result.header.version == SCHEMA_VERSION_INITIAL)
-      {
-        const size_t            data_bytes_size = result.header.data_size;
-        const SharedPtr<byte[]> data_bytes      = bfMemMakeShared<byte[]>(&allocator, data_bytes_size);
-
-        if (data_bytes != nullptr)
-        {
-          result.data_bytes = data_bytes;
-
-          if (IOStream_Read(stream, data_bytes.get(), data_bytes_size).ErrorCode() == binaryIO::IOErrorCode::Success)
-          {
-            if (VerifySchema(result))
-            {
-              return result;
-            }
-          }
-        }
-      }
-    }
-
-    return std::nullopt;
-  }
-
-  std::optional<Schema> Schema::FromBuffer(const void* const buffer, const std::size_t buffer_size)
-  {
-    if (buffer_size >= sizeof(SchemaHeader))
-    {
-      Schema schema;
-      std::memcpy(&schema.header, buffer, sizeof(SchemaHeader));  // NOTE(SR): Using memcpy rather than a cast since buffer may not be 8 byte aligned.
-
-      if (buffer_size >= (sizeof(SchemaHeader) + schema.header.data_size))
-      {
-        const unsigned char* const data_start = reinterpret_cast<const unsigned char*>(buffer) + sizeof(SchemaHeader);
-
-        schema.data_bytes = std::shared_ptr<const unsigned char[]>(data_start, [](const unsigned char* const ptr) {});
-
-        if (VerifySchema(schema))
-        {
-          return schema;
-        }
-      }
-    }
-
-    return std::nullopt;
-  }
-
-  //
-  // Builder API
-  //
-
-  template<typename T>
-  T* SchemaBuilderList<T>::Append(const AllocatorView memory)
-  {
-    T* const result = MemAllocateT<T>(memory);
-
-    if (result)
-    {
-      if (tail)
-      {
-        tail->next = result;
-      }
-      else
-      {
-        head = result;
-      }
-      tail = result;
-
-      ++num_elements;
-    }
-
-    return result;
-  }
-
-  template<typename T>
-  void SchemaBuilderList<T>::Free(const AllocatorView memory)
-  {
-    T* cursor = head;
-
-    while (cursor)
-    {
-      T* const next = cursor->next;
-
-      MemDeallocateT(memory, cursor);
-
-      cursor = next;
-    }
-  }
-
-  const MemberBuilder& MemberBuilder::AddQualifier(TypeConstructorFlags flags_part, std::uint32_t size_part) const
-  {
-    SchemaBuilderMemberQualifier& qual = *m_Member.qualifiers.Append(m_Allocator);
-
-    qual.flags              = ByteCodeEncodeFlags(flags_part, size_part);
-    qual.num_elements.fixed = size_part;
-
-    return *this;
-  }
-
-  MemberBuilder TypeBuilder::AddMember(const HashStr32 name, const HashStr32 type_name, const std::size_t offset)
-  {
-#if BINARY_SCHEMA_BUILD_VALIDATION
-    for (SchemaBuilderMemberNode* member = m_Type.members.head; member; member = member->next)
-    {
-      binaryIOAssert(member->name != name, "Member with this name already exists.");
-    }
-#endif
-
-    SchemaBuilderMemberNode* const member = m_Type.members.Append(m_Allocator);
-
-    binaryIOAssert(member != nullptr, "Allocation failure.");
-
-    member->name       = name;
-    member->base_type  = type_name;
-    member->qualifiers = {};
-    member->offset     = SizeType(offset);
-    member->next       = nullptr;
-
-    return MemberBuilder{m_Allocator, m_Type, *member};
-  }
-
-  void SchemaBuilder::Begin(IPolymorphicAllocator& working_memory)
-  {
-    ReleaseResources();
-    m_NumTypes     = 0u;
-    m_Memory       = &working_memory;
-    m_TypeListHead = nullptr;
-  }
-
-  TypeBuilder SchemaBuilder::AddType(HashStr32 name, std::uint32_t size, std::uint32_t alignment, SchemaTypeFlags flags)
-  {
-#if BINARY_SCHEMA_BUILD_VALIDATION
-    for (SchemaBuilderTypeNode* type = m_TypeListHead; type; type = type->next)
-    {
-      binaryIOAssert(type->name != name, "Type with this name already exists.");
-    }
-#endif
-
-    SchemaBuilderTypeNode* const node = MemAllocateT<SchemaBuilderTypeNode>(*m_Memory);
-
-    binaryIOAssert(node != nullptr, "Allocation failure.");
-
-    node->flags     = flags;
-    node->name      = name;
-    node->size      = size;
-    node->alignment = alignment;
-    node->members   = {};
-    node->next      = nullptr;
-
-    node->next = std::exchange(m_TypeListHead, node);
-    ++m_NumTypes;
-
-    return TypeBuilder(*m_Memory, *node);
-  }
-
-  static inline std::uint32_t CountByteCodeSize(const SchemaBuilderList<SchemaBuilderMemberQualifier>& qualifiers)
-  {
-    const SchemaBuilderMemberQualifier* qualifier = qualifiers.head;
-
-    std::uint32_t byte_code_size = qualifiers.num_elements * sizeof(TypeByteCode);
-
-    for (const SchemaBuilderMemberQualifier* qualifier = qualifiers.head; qualifier; qualifier = qualifier->next)
-    {
-      if (!ByteCodeHasSmallSize(qualifier->flags))
-      {
-        byte_code_size += sizeof(uint32_t);
-      }
-    }
-
-    return byte_code_size;
-  }
-
-  template<typename T>
-  static std::size_t GetDynamicMemoryUsage(const std::size_t size)
-  {
-    static_assert(sizeof(HashStr32Table<T>) == sizeof(std::uint32_t) * 3u, "");
-
-    return (sizeof(HashStr32) + sizeof(T)) * size;
-  }
-
-  SchemaBuilderEndToken SchemaBuilder::End()
-  {
-    MemoryRequirements memory_requirements = {};
-
-    memory_requirements.Append<SchemaType>(m_NumTypes);
-
-    for (SchemaBuilderTypeNode* type = m_TypeListHead; type; type = type->next)
-    {
-      const MemoryIndex num_members = type->members.num_elements;
-
-      memory_requirements.Append<HashStr32>(num_members);
-      memory_requirements.Append<StructureMember>(num_members);
-
-      for (const SchemaBuilderMemberNode* member = type->members.head; member; member = member->next)
-      {
-        memory_requirements.Append<TypeByteCode>(CountByteCodeSize(member->qualifiers));
-      }
-    }
-
-    return SchemaBuilderEndToken(memory_requirements);
-  }
-
-  std::optional<Schema> SchemaBuilder::Build(void* const memory, const SchemaBuilderEndToken& end_token) const
-  {
-    return BuildInternal(std::shared_ptr<byte[]>(static_cast<byte*>(memory), [](unsigned char* const) {}), end_token);
-  }
-
-  std::optional<Schema> SchemaBuilder::Build(IPolymorphicAllocator& allocator, const SchemaBuilderEndToken& end_token) const
-  {
-    return BuildInternal(bfMemMakeShared<byte[]>(&allocator, end_token.memory_requirements.size, end_token.memory_requirements.alignment), end_token);
-  }
-
-  void BinarySchema::SchemaBuilder::ReleaseResources()
-  {
-    for (auto type = m_TypeListHead; type != nullptr;)
-    {
-      for (auto member = type->members.head; member != nullptr; member = member->next)
-      {
-        member->qualifiers.Free(*m_Memory);
-      }
-
-      type->members.Free(*m_Memory);
-      MemDeallocateT(*m_Memory, std::exchange(type, type->next));
-    }
-    m_TypeListHead = nullptr;
-  }
-
-  std::optional<Schema> SchemaBuilder::BuildInternal(std::shared_ptr<byte[]>&& data_buffer, const SchemaBuilderEndToken& end_token) const
-  {
-    byte* bytes_current = data_buffer.get();
-
-    if (bytes_current)
-    {
-      const MemoryRequirements& memory_requirements = end_token.memory_requirements;
-
-#if BINARY_SCHEMA_BUILD_VALIDATION
-      binaryIOAssert(memory_requirements.IsBufferValid(bytes_current, memory_requirements.size), "Data buffer is not properly aligned.");
-#endif
-
-      const void* const memory_end = bytes_current + memory_requirements.size;
-
-      const std::uint32_t num_types = m_NumTypes;
-
-      Schema schema{};
-      schema.header.type_id   = SchemaHeader::ChunkID;
-      schema.header.data_size = memory_requirements.size;
-      schema.header.num_types = num_types;
-      schema.data_bytes       = std::move(data_buffer);
-
-      SchemaType* const types = MemoryRequirements::Alloc<SchemaType>(&bytes_current, memory_end, num_types);
-
-      SchemaType* types_cursor = types;
-      for (const SchemaBuilderTypeNode* src_type = m_TypeListHead; src_type; src_type = src_type->next)
-      {
-        SchemaType* const dst_type = types_cursor++;
-
-        dst_type->m_Name      = src_type->name;
-        dst_type->m_Flags     = src_type->flags;
-        dst_type->m_Size      = src_type->size;
-        dst_type->m_Alignment = src_type->alignment;
-      }
-
-      std::sort(types, types + num_types, [](const SchemaType& lhs, const SchemaType& rhs) -> bool { return lhs.m_Name.hash < rhs.m_Name.hash; });
-
-      types_cursor = types;
-      for (const SchemaBuilderTypeNode* src_type = m_TypeListHead; src_type; src_type = src_type->next)
-      {
-        SchemaType* const                      dst_type    = types_cursor++;
-        HashStr32Table<StructureMember>* const dst_members = &dst_type->m_Members;
-
-        dst_members->size   = src_type->members.num_elements;
-        dst_members->keys   = MemoryRequirements::Alloc<HashStr32>(&bytes_current, memory_end, dst_members->size);
-        dst_members->values = MemoryRequirements::Alloc<StructureMember>(&bytes_current, memory_end, dst_members->size);
-
-        HashStr32*       member_keys_cursor   = dst_members->keys.get();
-        StructureMember* member_values_cursor = dst_members->values.get();
-        for (const SchemaBuilderMemberNode* src_member = src_type->members.head; src_member; src_member = src_member->next)
-        {
-          HashStr32* const       dst_key_member = member_keys_cursor++;
-          StructureMember* const dst_val_member = member_values_cursor++;
-
-          const std::uint32_t byte_code_size = CountByteCodeSize(src_member->qualifiers);
-
-          *dst_key_member                         = src_member->name;
-          dst_val_member->base_type               = schema.FindType(src_member->base_type);
-          dst_val_member->type_ctors.elements     = MemoryRequirements::Alloc<TypeByteCode>(&bytes_current, memory_end, byte_code_size);
-          dst_val_member->type_ctors.num_elements = byte_code_size;
-          dst_val_member->offset                  = src_member->offset;
-
-          TypeByteCode* byte_code_write_ptr = dst_val_member->type_ctors.begin();
-
-          for (const SchemaBuilderMemberQualifier* qualifier = src_member->qualifiers.head; qualifier != nullptr; qualifier = qualifier->next)
-          {
-            *byte_code_write_ptr++ = static_cast<TypeByteCode>(qualifier->flags);
-
-            if (!ByteCodeHasSmallSize(qualifier->flags))
-            {
-              memcpy(byte_code_write_ptr, &qualifier->num_elements, sizeof(ArrayCountType));
-              byte_code_write_ptr += sizeof(ArrayCountType);
-            }
-          }
-        }
-      }
-
-#if BINARY_SCHEMA_BUILD_VALIDATION
-      if (VerifySchema(schema))
-#endif
-      {
-        return schema;
-      }
-    }
-
-    return std::nullopt;
-  }
-
-  void AddBasicScalarTypes(SchemaBuilder* const builder)
-  {
-    static_assert(sizeof(float) == 4u, "This name assumes float is 32bits.");
-    static_assert(sizeof(double) == 8u, "This name assumes double is 64bits.");
-
-    builder->AddType<uint8_t>("u8", SchemaTypeFlags::IntegerFlags);
-    builder->AddType<uint16_t>("u16", SchemaTypeFlags::IntegerFlags);
-    builder->AddType<uint32_t>("u32", SchemaTypeFlags::IntegerFlags);
-    builder->AddType<uint64_t>("u64", SchemaTypeFlags::IntegerFlags);
-    builder->AddType<int8_t>("i8", SchemaTypeFlags::IntegerFlags);
-    builder->AddType<int16_t>("i16", SchemaTypeFlags::IntegerFlags);
-    builder->AddType<int32_t>("i32", SchemaTypeFlags::IntegerFlags);
-    builder->AddType<int64_t>("i64", SchemaTypeFlags::IntegerFlags);
-    builder->AddType<float>("f32", SchemaTypeFlags::FloatingPointFlags);
-    builder->AddType<double>("f64", SchemaTypeFlags::FloatingPointFlags);
+    return (it == types_end || it->m_Name.hash != name.hash) ? nullptr : types + std::distance(types, it);
   }
 
   //
@@ -685,8 +331,7 @@ namespace BinarySchema
         const SchemaType& array_count_type = *dyn_count_member.base_type;
 
 #if BINARY_SCHEMA_RUNTIME_VALIDATION
-        binaryIOAssert(array_count_type.IsIntScalar() && !dyn_count_member.HasQualifiers(),
-                       "Dynamic array size type must be an unqualified integer type.");
+        binaryIOAssert(array_count_type.IsIntScalar() && !dyn_count_member.HasQualifiers(), "Dynamic array size type must be an unqualified integer type.");
 #endif
 
         const void* const num_elements_data = dyn_count_member.GetMemberData(parent_object);
@@ -765,10 +410,8 @@ namespace BinarySchema
 
   namespace WriteInternal
   {
-    template<ByteOrder byte_order>
     static binaryIO::IOErrorCode WriteUnqualifiedType(binaryIO::IOStream* const stream, const void* const data, const SchemaType& type);
 
-    template<ByteOrder byte_order>
     static binaryIO::IOErrorCode WriteQualifiedType(
      binaryIO::IOStream* const stream,
      const SchemaType&         parent_type,
@@ -800,119 +443,48 @@ namespace BinarySchema
           {
             const void* const element = static_cast<const char*>(data_location) + stride * i;
 
-            WriteQualifiedType<byte_order>(stream, parent_type, parent_object, element, base_type, type_bytecode, type_bytecode_end);
+            WriteQualifiedType(stream, parent_type, parent_object, element, base_type, type_bytecode, type_bytecode_end);
           }
         }
       }
       else
       {
-        WriteUnqualifiedType<byte_order>(stream, data, base_type);
+        WriteUnqualifiedType(stream, data, base_type);
       }
 
       return stream->error_state;
     }
 
-    template<ByteOrder byte_order>
     static binaryIO::IOErrorCode WriteUnqualifiedType(binaryIO::IOStream* const stream, const void* const data, const SchemaType& type)
     {
       if (type.IsTrivial())
       {
-        if (type.IsEndianDependent())
-        {
-          // @ByteOrder
-          if constexpr (byte_order == ByteOrder::Native)
-          {
-            IOStream_Write(stream, data, type.m_Size);
-          }
-          else if constexpr (byte_order == ByteOrder::LittleEndian)
-          {
-            switch (type.m_Size)
-            {
-              case 2u: writeLE(stream, *static_cast<const std::uint16_t*>(data)); break;
-              case 4u: writeLE(stream, *static_cast<const std::uint32_t*>(data)); break;
-              case 8u: writeLE(stream, *static_cast<const std::uint64_t*>(data)); break;
-              default: unreachable();
-            }
-          }
-          else if constexpr (byte_order == ByteOrder::BigEndian)
-          {
-            switch (type.m_Size)
-            {
-              case 2u: writeBE(stream, *static_cast<const std::uint16_t*>(data)); break;
-              case 4u: writeBE(stream, *static_cast<const std::uint32_t*>(data)); break;
-              case 8u: writeBE(stream, *static_cast<const std::uint64_t*>(data)); break;
-              default: unreachable();
-            }
-          }
-        }
-        else
-        {
-          IOStream_Write(stream, data, type.m_Size);
-        }
+        IOStream_Write(stream, data, type.m_Size);
       }
       else
       {
-        type.m_Members.ForEach([&](const BinarySchema::HashStr32 member_name, const BinarySchema::StructureMember& member) {
-          WriteQualifiedType<byte_order>(
-           stream,
-           type,
-           data,
-           member.GetMemberData(data),
-           *member.base_type,
-           member.type_ctors.begin(),
-           member.type_ctors.end());
-        });
+        for (const BinarySchema::StructureMember& member : type.m_Members)
+        {
+          WriteQualifiedType(stream, type, data, member.GetMemberData(data), *member.base_type, member.type_ctors.begin(), member.type_ctors.end());
+        }
       }
 
       return stream->error_state;
     }
   }  // namespace WriteInternal
 
-  binaryIO::IOErrorCode Write(binaryIO::IOStream* const stream,
-                              const SchemaType&         type,
-                              const void* const         data,
-                              const ByteOrder           byte_order)
-  {
-    // @ByteOrder
-    switch (byte_order)
-    {
-      case ByteOrder::Native:       return WriteInternal::WriteUnqualifiedType<ByteOrder::Native>(stream, data, type);
-      case ByteOrder::LittleEndian: return WriteInternal::WriteUnqualifiedType<ByteOrder::LittleEndian>(stream, data, type);
-      case ByteOrder::BigEndian:    return WriteInternal::WriteUnqualifiedType<ByteOrder::BigEndian>(stream, data, type);
-      default:                      unreachable();
-    }
-  }
-
-  binaryIO::IOErrorCode Write(binaryIO::IOStream* const stream,
-                              const Schema&             schema,
-                              const HashStr32           type_name,
-                              const void* const         data,
-                              const ByteOrder           byte_order)
-  {
-    const SchemaType* const type = schema.FindType(type_name);
-
-#if BINARY_SCHEMA_RUNTIME_VALIDATION
-    binaryIOAssert(type != nullptr, "Failed to find type.");
-#endif
-
-    return Write(stream, *type, data, byte_order);
-  }
-
   namespace ReadInternal
   {
-    template<ByteOrder byte_order>
     static binaryIO::IOErrorCode ReadUnqualifiedType(binaryIO::IOStream* const stream, IPolymorphicAllocator& memory, void* const data, const SchemaType& type);
 
-    template<ByteOrder byte_order>
-    static binaryIO::IOErrorCode ReadQualifiedType(
-     binaryIO::IOStream* const stream,
-     IPolymorphicAllocator&    memory,
-     const SchemaType&         parent_type,
-     const void* const         parent_object,
-     void* const               data,
-     const SchemaType&         base_type,
-     const TypeByteCode*       type_bytecode,
-     const TypeByteCode* const type_bytecode_end)
+    static binaryIO::IOErrorCode ReadQualifiedType(binaryIO::IOStream* const stream,
+                                                   IPolymorphicAllocator&    memory,
+                                                   const SchemaType&         parent_type,
+                                                   const void* const         parent_object,
+                                                   void* const               data,
+                                                   const SchemaType&         base_type,
+                                                   const TypeByteCode*       type_bytecode,
+                                                   const TypeByteCode* const type_bytecode_end)
     {
       if (type_bytecode != type_bytecode_end)
       {
@@ -942,60 +514,29 @@ namespace BinarySchema
           {
             void* const element = static_cast<char*>(write_location) + stride * i;
 
-            ReadQualifiedType<byte_order>(stream, memory, parent_type, parent_object, element, base_type, type_bytecode, type_bytecode_end);
+            ReadQualifiedType(stream, memory, parent_type, parent_object, element, base_type, type_bytecode, type_bytecode_end);
           }
         }
       }
       else
       {
-        ReadUnqualifiedType<byte_order>(stream, memory, data, base_type);
+        ReadUnqualifiedType(stream, memory, data, base_type);
       }
 
       return stream->error_state;
     }
 
-    template<ByteOrder byte_order>
     static binaryIO::IOErrorCode ReadUnqualifiedType(binaryIO::IOStream* const stream, IPolymorphicAllocator& memory, void* const data, const SchemaType& type)
     {
       if (type.IsTrivial())
       {
-        if (type.IsEndianDependent())
-        {
-          // @ByteOrder
-          if constexpr (byte_order == ByteOrder::Native)
-          {
-            IOStream_Read(stream, data, type.m_Size);
-          }
-          else if constexpr (byte_order == ByteOrder::LittleEndian)
-          {
-            switch (type.m_Size)
-            {
-              case 2u: readLE(stream, static_cast<std::uint16_t*>(data)); break;
-              case 4u: readLE(stream, static_cast<std::uint32_t*>(data)); break;
-              case 8u: readLE(stream, static_cast<std::uint64_t*>(data)); break;
-              default: unreachable();
-            }
-          }
-          else if constexpr (byte_order == ByteOrder::BigEndian)
-          {
-            switch (type.m_Size)
-            {
-              case 2u: readBE(stream, static_cast<std::uint16_t*>(data)); break;
-              case 4u: readBE(stream, static_cast<std::uint32_t*>(data)); break;
-              case 8u: readBE(stream, static_cast<std::uint64_t*>(data)); break;
-              default: unreachable();
-            }
-          }
-        }
-        else
-        {
-          IOStream_Read(stream, data, type.m_Size);
-        }
+        IOStream_Read(stream, data, type.m_Size);
       }
       else
       {
-        type.m_Members.ForEach([&](const BinarySchema::HashStr32 member_name, const BinarySchema::StructureMember& member) {
-          ReadQualifiedType<byte_order>(
+        for (const BinarySchema::StructureMember& member : type.m_Members)
+        {
+          ReadQualifiedType(
            stream,
            memory,
            type,
@@ -1004,44 +545,12 @@ namespace BinarySchema
            *member.base_type,
            member.type_ctors.begin(),
            member.type_ctors.end());
-        });
+        }
       }
 
       return stream->error_state;
     }
   }  // namespace ReadInternal
-
-  binaryIO::IOErrorCode Read(binaryIO::IOStream* const stream,
-                             IPolymorphicAllocator&    memory,
-                             const SchemaType&         type,
-                             void* const               data,
-                             const ByteOrder           byte_order)
-  {
-    // @ByteOrder
-    switch (byte_order)
-    {
-      case ByteOrder::Native:       return ReadInternal::ReadUnqualifiedType<ByteOrder::Native>(stream, memory, data, type);
-      case ByteOrder::LittleEndian: return ReadInternal::ReadUnqualifiedType<ByteOrder::LittleEndian>(stream, memory, data, type);
-      case ByteOrder::BigEndian:    return ReadInternal::ReadUnqualifiedType<ByteOrder::BigEndian>(stream, memory, data, type);
-      default:                      unreachable();
-    }
-  }
-
-  binaryIO::IOErrorCode Read(binaryIO::IOStream* const stream,
-                             IPolymorphicAllocator&    memory,
-                             const Schema&             schema,
-                             const HashStr32           type_name,
-                             void* const               data,
-                             const ByteOrder           byte_order)
-  {
-    const SchemaType* const type = schema.FindType(type_name);
-
-#if BINARY_SCHEMA_RUNTIME_VALIDATION
-    binaryIOAssert(type != nullptr, "Failed to find type.");
-#endif
-
-    return Read(stream, memory, *type, data, byte_order);
-  }
 
   namespace ConvertInternal
   {
@@ -1155,8 +664,9 @@ namespace BinarySchema
       }
       else
       {
-        dst_type.m_Members.ForEach([&](HashStr32 member_name, const StructureMember& dst_member) {
-          const StructureMember* const src_member = src_type.FindMember(member_name);
+        for (const BinarySchema::StructureMember& dst_member : dst_type.m_Members)
+        {
+          const StructureMember* const src_member = src_type.FindMember(dst_member.name.hash);
 
           if (src_member && src_member->IsConvertCompatibleWith(dst_member))
           {
@@ -1174,90 +684,10 @@ namespace BinarySchema
              src_member->type_ctors.end(),
              dst_member.type_ctors.begin());
           }
-        });
+        }
       }
     }
   }  // namespace ConvertInternal
-
-  void Convert(const void* const      src_struct,
-               const SchemaType&      src_type,
-               void* const            dst_struct,
-               const SchemaType&      dst_type,
-               IPolymorphicAllocator& dst_memory)
-  {
-    return ConvertInternal::ConvertUnqualifiedType(dst_memory, src_struct, dst_struct, src_type, dst_type);
-  }
-
-  void Convert(const void* const      src_struct,
-               const Schema&          src_schema,
-               void* const            dst_struct,
-               const Schema&          dst_schema,
-               IPolymorphicAllocator& dst_memory,
-               HashStr32              type_name)
-  {
-    const SchemaType* const src_type = src_schema.FindType(type_name);
-    const SchemaType* const dst_type = dst_schema.FindType(type_name);
-
-#if BINARY_SCHEMA_RUNTIME_VALIDATION
-    binaryIOAssert(src_type != nullptr, "Failed to find source type.");
-    binaryIOAssert(dst_type != nullptr, "Failed to find destination type.");
-#endif
-
-    return Convert(src_struct, *src_type, dst_struct, *dst_type, dst_memory);
-  }
-
-  binaryIO::IOErrorCode Upgrade(binaryIO::IOStream* const stream,
-                                IPolymorphicAllocator&    memory,
-                                const SchemaType&         src_type,
-                                const SchemaType&         dst_type,
-                                void* const               dst_struct,
-                                const ByteOrder           byte_order)
-  {
-    if (src_type == dst_type)
-    {
-      return Read(stream, memory, dst_type, dst_struct, byte_order);
-    }
-    else
-    {
-      const AllocationResult src_struct_allocation = MemAllocate(memory, src_type.m_Size, src_type.m_Alignment);
-
-      if (!src_struct_allocation)
-      {
-        return binaryIO::IOErrorCode::AllocationFailure;
-      }
-
-      void* const                 src_struct  = src_struct_allocation.ptr;
-      const binaryIO::IOErrorCode read_result = Read(stream, memory, src_type, src_struct, byte_order);
-
-      if (read_result == binaryIO::IOErrorCode::Success)
-      {
-        Convert(src_struct, src_type, dst_struct, dst_type, memory);
-      }
-
-      BinarySchema::FreeDynamicMemory(memory, src_type, src_struct);
-      MemDeallocate(memory, src_struct_allocation.ptr, src_struct_allocation.num_bytes, src_type.m_Alignment);
-      return read_result;
-    }
-  }
-
-  binaryIO::IOErrorCode Upgrade(binaryIO::IOStream* const stream,
-                                IPolymorphicAllocator&    memory,
-                                const Schema&             src_schema,
-                                const Schema&             dst_schema,
-                                void* const               dst_struct,
-                                const HashStr32           type_name,
-                                const ByteOrder           byte_order)
-  {
-    const SchemaType* const src_type = src_schema.FindType(type_name);
-    const SchemaType* const dst_type = dst_schema.FindType(type_name);
-
-#if BINARY_SCHEMA_RUNTIME_VALIDATION
-    binaryIOAssert(src_type != nullptr, "Failed to find source type.");
-    binaryIOAssert(dst_type != nullptr, "Failed to find destination type.");
-#endif
-
-    return Upgrade(stream, memory, *src_type, *dst_type, dst_struct, byte_order);
-  }
 
   namespace FreeInternal
   {
@@ -1304,37 +734,655 @@ namespace BinarySchema
 
     static void FreeUnqualifiedType(IPolymorphicAllocator& memory, void* const data, const SchemaType& type)
     {
-      type.m_Members.ForEach([&](const BinarySchema::HashStr32 member_name, const BinarySchema::StructureMember& member) {
-        FreeQualifiedType(
-         memory,
-         type,
-         data,
-         member.GetMemberData(data),
-         *member.base_type,
-         member.type_ctors.begin(),
-         member.type_ctors.end());
-      });
+      for (const BinarySchema::StructureMember& member : type.m_Members)
+      {
+        FreeQualifiedType(memory, type, data, member.GetMemberData(data), *member.base_type, member.type_ctors.begin(), member.type_ctors.end());
+      }
     }
   }  // namespace FreeInternal
 
-  void FreeDynamicMemory(IPolymorphicAllocator& memory, const SchemaType& type, void* const data)
-  {
-    FreeInternal::FreeUnqualifiedType(memory, data, type);
-  }
-
-  void FreeDynamicMemory(IPolymorphicAllocator& memory, const Schema& schema, const HashStr32 type_name, void* const data)
-  {
-    const SchemaType* const type = schema.FindType(type_name);
-
-#if BINARY_SCHEMA_RUNTIME_VALIDATION
-    binaryIOAssert(type != nullptr, "Failed to find type.");
-#endif
-
-    return FreeDynamicMemory(memory, *type, data);
-  }
 }  // namespace BinarySchema
 
 #undef unreachable
+
+#pragma region Builder API
+
+struct BinarySchema::build_internal::MemberBuilder
+{
+  BuilderName   name;
+  SizeType      offset;
+  HashStr32     base_type_name;
+  std::uint32_t qualifier_offset;
+  std::uint32_t qualifier_count;
+};
+static_assert(std::is_trivially_destructible_v<BinarySchema::build_internal::MemberBuilder>, "Destructor is not called.");
+
+struct BinarySchema::build_internal::TempListChunk
+{
+  void*          data     = nullptr;
+  std::size_t    size     = 0;
+  std::size_t    capacity = 0;
+  TempListChunk* next     = nullptr;
+};
+static_assert(std::is_trivially_destructible_v<BinarySchema::build_internal::TempListChunk>, "Destructor is not called.");
+
+struct BinarySchema::build_internal::TypeBuilder
+{
+  BuilderName     name;
+  SchemaTypeFlags flags;
+  SizeType        size;
+  std::uint16_t   alignment;
+  std::uint32_t   member_offset;
+  std::uint32_t   member_count;
+};
+static_assert(std::is_trivially_destructible_v<BinarySchema::build_internal::TypeBuilder>, "Destructor is not called.");
+
+struct BinarySchema::build_internal::TypeTableChunk
+{
+  static constexpr std::size_t TableCapacity = 256;
+  static constexpr std::size_t MaxCount      = (TableCapacity * 3) / 4;
+  static constexpr std::size_t BloomWords    = 4;
+
+  uint64_t        bloom[BloomWords]   = {};
+  TypeBuilder*    keys[TableCapacity] = {};
+  std::size_t     count               = 0u;
+  TypeTableChunk* next                = nullptr;
+};
+static_assert(std::is_trivially_destructible_v<BinarySchema::build_internal::TypeTableChunk>, "Destructor is not called.");
+
+namespace
+{
+  static constexpr uint32_t HashMix(uint32_t x)
+  {
+    x ^= x >> 16;
+    x *= 0x7feb352d;
+    x ^= x >> 15;
+    return x;
+  }
+
+  namespace bloom_filter
+  {
+    static constexpr bool TestBit(const BinarySchema::build_internal::TypeTableChunk& chunk, const uint32_t h)
+    {
+      constexpr uint32_t Bits = BinarySchema::build_internal::TypeTableChunk::BloomWords * 64;
+
+      const uint32_t bit = h % Bits;
+
+      return (chunk.bloom[bit >> 6] & (1ull << (bit & 63))) != 0;
+    }
+
+    static void SetBit(BinarySchema::build_internal::TypeTableChunk* const chunk, const uint32_t h)
+    {
+      constexpr uint32_t Bits = BinarySchema::build_internal::TypeTableChunk::BloomWords * 64;
+
+      const uint32_t bit = h % Bits;
+
+      chunk->bloom[bit >> 6] |= 1ull << (bit & 63);
+    }
+
+    static bool MayContain(const BinarySchema::build_internal::TypeTableChunk& chunk, const BinarySchema::HashStr32 name)
+    {
+      const uint32_t hash = name.hash;
+      const uint32_t h1   = hash;
+      const uint32_t h2   = HashMix(hash);
+
+      return TestBit(chunk, h1) && TestBit(chunk, h2) && TestBit(chunk, h1 + h2);
+    }
+
+    static void AddHash(BinarySchema::build_internal::TypeTableChunk* const chunk, const BinarySchema::HashStr32 name)
+    {
+      const uint32_t hash = name.hash;
+      const uint32_t h1   = hash;
+      const uint32_t h2   = HashMix(hash);
+
+      SetBit(chunk, h1);
+      SetBit(chunk, h2);
+      SetBit(chunk, h1 + h2);
+    }
+  }
+
+  namespace type_tbl
+  {
+    static std::optional<std::size_t> Find(const BinarySchema::build_internal::TypeTableChunk& chunk, const BinarySchema::HashStr32 hash)
+    {
+      constexpr std::size_t Mask = BinarySchema::build_internal::TypeTableChunk::TableCapacity - 1;
+
+      std::size_t index = HashMix(hash.hash) & Mask;
+
+      while (true)
+      {
+        BinarySchema::build_internal::TypeBuilder* const slot = chunk.keys[index];
+
+        if (slot == nullptr)
+        {
+          return std::nullopt;
+        }
+        else if (slot->name.hash_str == hash)
+        {
+          return index;
+        }
+
+        index = (index + 1) & Mask;
+      }
+    }
+
+    static void AppendChunk(const AllocatorView allocator, BinarySchema::build_internal::TypeBuilderTable* const table)
+    {
+      auto* const new_chunk = MemAllocateT<BinarySchema::build_internal::TypeTableChunk>(allocator);
+
+      Memory::SetBytes(new_chunk, 0x0, sizeof(*new_chunk));
+
+      new_chunk->next   = table->tail_chunk;
+      table->tail_chunk = new_chunk;
+    }
+
+    static BinarySchema::build_internal::TypeBuilder** Insert(BinarySchema::build_internal::TypeTableChunk* const chunk, const BinarySchema::HashStr32 name)
+    {
+      constexpr std::size_t Mask = BinarySchema::build_internal::TypeTableChunk::TableCapacity - 1;
+
+      std::size_t index = HashMix(name.hash) & Mask;
+
+      while (true)
+      {
+        BinarySchema::build_internal::TypeBuilder*& slot = chunk->keys[index];
+
+        if (slot == nullptr)
+        {
+          slot = nullptr;
+          bloom_filter::AddHash(chunk, name);
+          ++chunk->count;
+          return &slot;
+        }
+
+        index = (index + 1) & Mask;
+      }
+    }
+
+    static BinarySchema::build_internal::TypeBuilder** Upsert(BinarySchema::build_internal::TypeBuilderTable* const table, const AllocatorView allocator, const BinarySchema::HashStr32 name)
+    {
+      for (BinarySchema::build_internal::TypeTableChunk* chunk = table->tail_chunk; chunk != nullptr; chunk = chunk->next)
+      {
+        if (bloom_filter::MayContain(*chunk, name))
+        {
+          const std::optional<std::size_t> table_index = type_tbl::Find(*chunk, name);
+
+          if (table_index)
+          {
+            return &chunk->keys[*table_index];
+          }
+        }
+      }
+
+      if (table->tail_chunk == nullptr || table->tail_chunk->count == BinarySchema::build_internal::TypeTableChunk::MaxCount)
+      {
+        type_tbl::AppendChunk(allocator, table);
+      }
+
+      return type_tbl::Insert(table->tail_chunk, name);
+    }
+
+    static void FreeMemory(const AllocatorView allocator, const BinarySchema::build_internal::TypeBuilderTable& table)
+    {
+      BinarySchema::build_internal::TypeTableChunk* chunk = table.tail_chunk;
+
+      while (chunk != nullptr)
+      {
+        BinarySchema::build_internal::TypeTableChunk* const chunk_next = chunk->next;
+
+        MemDeallocateT(allocator, chunk);
+
+        chunk = chunk_next;
+      }
+    }
+  }
+
+  namespace type_lst
+  {
+    template<typename T>
+    static T* EmplaceBack(const AllocatorView allocator, BinarySchema::build_internal::TempList<T>* const list)
+    {
+      // Check Current Tail and Grow
+      {
+        BinarySchema::build_internal::TempListChunk* const tail_chunk = list->tail_chunk;
+
+        if (tail_chunk == nullptr || tail_chunk->size == tail_chunk->capacity)
+        {
+          const std::size_t new_capacity = tail_chunk != nullptr ? tail_chunk->capacity * 2 : 8;
+
+          MemoryRequirements size_align{};
+          size_align.Append<BinarySchema::build_internal::TempListChunk>();
+          const MemoryIndex data_offset = size_align.Append(sizeof(T), new_capacity, alignof(T));
+
+          byte* const allocation = static_cast<byte*>(MemAllocate(allocator, size_align.size, size_align.alignment).ptr);
+          auto*       new_chunk  = reinterpret_cast<BinarySchema::build_internal::TempListChunk*>(allocation);
+
+          new_chunk->data     = allocation + data_offset;
+          new_chunk->size     = 0;
+          new_chunk->capacity = new_capacity;
+          new_chunk->next     = nullptr;
+
+          if (list->head_chunk == nullptr)
+          {
+            list->head_chunk = new_chunk;
+          }
+          else
+          {
+            list->tail_chunk->next = new_chunk;
+          }
+
+          list->tail_chunk = new_chunk;
+        }
+      }
+      {
+        BinarySchema::build_internal::TempListChunk* const tail_chunk = list->tail_chunk;
+
+        T* const result = static_cast<T*>(tail_chunk->data) + (tail_chunk->size++);
+
+        ++list->size;
+        return result;
+      }
+    }
+
+    template<typename T, typename CallbackFn>
+    static void ForEach(const BinarySchema::build_internal::TempList<T>& list, CallbackFn&& Callback)
+    {
+      const BinarySchema::build_internal::TempListChunk* chunk        = list.head_chunk;
+      std::size_t                                        global_index = 0u;
+
+      while (chunk != nullptr)
+      {
+        const std::size_t                                        chunk_size = chunk->size;
+        const BinarySchema::build_internal::TempListChunk* const chunk_next = chunk->next;
+        T* const                                                 chunk_data = static_cast<T*>(chunk->data);
+
+        for (std::size_t local_index = 0u; local_index < chunk_size; ++local_index)
+        {
+          Callback(global_index + local_index, chunk_data[local_index]);
+        }
+
+        global_index += chunk_size;
+        chunk         = chunk_next;
+      }
+    }
+
+    static void FreeMemory(const AllocatorView allocator, BinarySchema::build_internal::TempListChunk* const head_chunk, const MemoryIndex element_size, const MemoryIndex element_align)
+    {
+      BinarySchema::build_internal::TempListChunk* chunk = head_chunk;
+
+      while (chunk != nullptr)
+      {
+        BinarySchema::build_internal::TempListChunk* const chunk_next = chunk->next;
+
+        MemoryRequirements size_align{};
+        size_align.Append<BinarySchema::build_internal::TempListChunk>();
+        size_align.Append(element_size, chunk->capacity, element_align);
+
+        MemDeallocate(allocator, chunk, size_align.size, size_align.alignment);
+
+        chunk = chunk_next;
+      }
+    }
+
+    template<typename T>
+    static void FreeMemory(const AllocatorView allocator, const BinarySchema::build_internal::TempList<T>& list)
+    {
+      FreeMemory(allocator, list.head_chunk, sizeof(T), alignof(T));
+    }
+  }
+
+}
+
+void BinarySchema::BuildCtx::AddQualifier(build_internal::MemberBuilder& member, TypeConstructorFlags flags_part, std::uint32_t size_part) const
+{
+  if (flags_part == TypeConstructorFlags::DynamicArray)
+  {
+    binaryIOAssert(member.name.hash_str.hash != size_part, "Assigning dynamic size recursively is not valid.");
+  }
+
+#if 0
+  if (flags_part == TypeConstructorFlags::DynamicArray)
+  {
+    const build_internal::MemberBuilder* dynamic_size_member = nullptr;
+
+    type_lst::ForEach(type->members, [&](const std::size_t /* index */, const build_internal::MemberBuilder& member) -> void {
+      if (member.name.hash == size_part)
+      {
+        dynamic_size_member = &member;
+      }
+    });
+
+    binaryIOAssert(dynamic_size_member, "Dynamic size member must be registered before the dynamic array member.");
+  }
+#endif
+
+  const TypeConstructorFlags encoded_flags = ByteCodeEncodeFlags(flags_part, size_part);
+
+  *type_lst::EmplaceBack(builder->allocator, &builder->qualifier_list) = static_cast<TypeByteCode>(encoded_flags);
+  if (!ByteCodeHasSmallSize(encoded_flags))
+  {
+    TypeByteCode size_bytes[sizeof(size_part)];
+    std::memcpy(size_bytes, &size_part, sizeof(size_part));
+
+    for (const TypeByteCode size_byte : size_bytes)
+    {
+      *type_lst::EmplaceBack(builder->allocator, &builder->qualifier_list) = size_byte;
+    }
+  }
+
+  member.qualifier_count = std::uint32_t(builder->qualifier_list.size - member.qualifier_offset);
+}
+
+void BinarySchema::BuildCtx::SetBaseType(build_internal::MemberBuilder& member, const build_internal::TypeBuilder* const type)
+{
+  member.base_type_name = type->name.hash_str;
+}
+
+BinarySchema::build_internal::MemberBuilder& BinarySchema::BuildCtx::AddMember_Internal(const BuilderName name, const SizeType byte_offset) const
+{
+#if 0
+#if BINARY_SCHEMA_BUILD_VALIDATION
+  type_lst::ForEach(type->members, [&name](const std::size_t /* index */, const build_internal::MemberBuilder& member) -> void {
+    binaryIOAssert(member.name != name, "Member with this name already exists.");
+  });
+#endif
+#endif
+
+  build_internal::MemberBuilder* const new_member = type_lst::EmplaceBack(builder->allocator, &builder->member_list);
+
+  new_member->name             = name;
+  new_member->offset           = byte_offset;
+  new_member->base_type_name   = "";
+  new_member->qualifier_offset = std::uint32_t(builder->qualifier_list.size);
+  new_member->qualifier_count  = 0;
+  ++type->member_count;
+
+  return *new_member;
+}
+
+BinarySchema::Builder::Builder(const AllocatorView allocator) :
+  allocator{allocator},
+  type_table{},
+  type_list{},
+  member_list{},
+  qualifier_list{}
+{
+}
+
+BinarySchema::Builder::~Builder()
+{
+  type_lst::FreeMemory(allocator, qualifier_list);
+  type_lst::FreeMemory(allocator, member_list);
+  type_lst::FreeMemory(allocator, type_list);
+  type_tbl::FreeMemory(allocator, type_table);
+}
+
+template<std::size_t N>
+static void ZeroPaddingBetweenPtrs(void* const (&ptrs)[N])
+{
+  for (std::size_t ptr_index = 0; ptr_index < (N - 1); ++ptr_index)
+  {
+    byte* const bgn = static_cast<byte*>(ptrs[ptr_index + 0]);
+    byte* const end = static_cast<byte*>(ptrs[ptr_index + 1]);
+
+    if (bgn != nullptr && end != nullptr)
+    {
+      const std::ptrdiff_t bytes = end - bgn;
+
+      Memory::SetBytes(bgn, 0x0, bytes);
+    }
+  }
+}
+
+BinarySchema::Schema BinarySchema::Builder::BuildSchema(IPolymorphicAllocator& allocator) const
+{
+  constexpr bool KeepDebugStringData = false;
+
+  std::uint32_t string_table_length = 0u;
+
+  if constexpr (KeepDebugStringData)
+  {
+    type_lst::ForEach(type_list, [&](const std::size_t type_index, const build_internal::TypeBuilder& type) -> void {
+      string_table_length += (type.name.str_length + 1);
+    });
+
+    type_lst::ForEach(member_list, [&](const std::size_t member_index, const build_internal::MemberBuilder& member) -> void {
+      string_table_length += (member.name.str_length + 1);
+    });
+  }
+
+  MemoryRequirements data_size_align{};
+  {
+    data_size_align.Append<SchemaType>(type_list.size);
+    data_size_align.Append<StructureMember>(member_list.size);
+    data_size_align.Append<TypeByteCode>(qualifier_list.size);
+    data_size_align.Append<char>(string_table_length);
+  }
+
+  const SharedPtr<byte[]> raw_bytes = bfMemMakeShared<byte[]>(&allocator, data_size_align.size, data_size_align.alignment);
+
+  Schema schema{};
+  schema.type_id             = SchemaHeader::ChunkID;
+  schema.data_size           = data_size_align.size;
+  schema.num_types           = std::uint32_t(type_list.size);
+  schema.num_members         = std::uint32_t(member_list.size);
+  schema.num_qualifiers      = std::uint32_t(type_list.size);
+  schema.string_table_length = string_table_length;
+  schema.types               = bfMemMakeSharedAliasArray(raw_bytes, reinterpret_cast<SchemaType*>(raw_bytes.get()));
+
+  {
+    byte* bytes_current = raw_bytes.get();
+
+    if (bytes_current)
+    {
+#if BINARY_SCHEMA_BUILD_VALIDATION
+      binaryIOAssert(data_size_align.IsBufferValid(bytes_current, data_size_align.size), "Data buffer is not properly aligned.");
+#endif
+
+      // Allocations
+
+      const void* const      memory_end = bytes_current + data_size_align.size;
+      SchemaType* const      types      = MemoryRequirements::Alloc<SchemaType>(&bytes_current, memory_end, schema.num_types);
+      StructureMember* const members    = MemoryRequirements::Alloc<StructureMember>(&bytes_current, memory_end, schema.num_members);
+      TypeByteCode* const    qualifiers = MemoryRequirements::Alloc<TypeByteCode>(&bytes_current, memory_end, schema.num_qualifiers);
+      char* const            strings    = MemoryRequirements::Alloc<char>(&bytes_current, memory_end, schema.string_table_length);
+
+      auto CopyName = [&, write_offset = std::uint32_t(0)](const BuilderName& name) mutable -> StrName {
+        StrName result = {name.hash_str.hash, nullptr};
+
+        if constexpr (KeepDebugStringData)
+        {
+          result.debug_name.offset = write_offset;
+
+          std::memcpy(strings + write_offset, name.str, name.str_length);
+          write_offset            += name.str_length;
+          strings[write_offset++]  = '\0';
+        }
+
+        return result;
+      };
+
+      const auto FixupString = [strings](StrName* const name) {
+        if constexpr (KeepDebugStringData)
+        {
+          name->debug_name = strings + name->debug_name.offset;
+        }
+      };
+
+      // Zero out any padding between allocations.
+      {
+        ZeroPaddingBetweenPtrs({types, members, qualifiers, strings});
+      }
+      // Convert Types
+      {
+        type_lst::ForEach(type_list, [&](const std::size_t type_index, const build_internal::TypeBuilder& src_type) -> void {
+          SchemaType* const dst_type = types + type_index;
+
+          dst_type->m_Name                    = CopyName(src_type.name);
+          dst_type->m_Flags                   = src_type.flags;
+          dst_type->m_Size                    = src_type.size;
+          dst_type->m_Alignment               = src_type.alignment;
+          dst_type->m_Members.elements.offset = src_type.member_offset;
+          dst_type->m_Members.num_elements    = src_type.member_count;
+        });
+
+        std::sort(types, types + schema.num_types, [](const SchemaType& lhs, const SchemaType& rhs) -> bool { return lhs.m_Name.hash < rhs.m_Name.hash; });
+      }
+      // Update the relative pointer address
+      {
+        for (std::size_t type_index = 0; type_index < schema.num_types; ++type_index)
+        {
+          SchemaType* const dst_type = types + type_index;
+
+          FixupString(&dst_type->m_Name);
+          dst_type->m_Members.elements = members + dst_type->m_Members.elements.offset;
+        }
+      }
+      // Convert Members
+      {
+        type_lst::ForEach(member_list, [&](const std::size_t member_index, const build_internal::MemberBuilder& src_member) -> void {
+          StructureMember* const dst_member = members + member_index;
+
+          dst_member->name                    = CopyName(src_member.name);
+          dst_member->base_type               = schema.FindType(src_member.base_type_name);
+          dst_member->type_ctors.elements     = qualifiers + src_member.qualifier_offset;
+          dst_member->type_ctors.num_elements = src_member.qualifier_count;
+          dst_member->offset                  = src_member.offset;
+
+          FixupString(&dst_member->name);
+        });
+      }
+      // Convert Qualifiers
+      {
+        type_lst::ForEach(qualifier_list, [&](const std::size_t qualifier_index, const TypeByteCode& src_qualifier) -> void {
+          qualifiers[qualifier_index] = src_qualifier;
+        });
+      }
+
+#if BINARY_SCHEMA_BUILD_VALIDATION
+      if (VerifySchema(schema))
+#endif
+      {
+        return schema;
+      }
+    }
+  }
+
+  return Schema{};
+}
+
+BinarySchema::build_internal::TypeBuilder* BinarySchema::Builder::AddType_Internal(const BuilderName name, const SchemaTypeFlags flags, const std::size_t size, const std::size_t alignment, void (*Builder)(const BuildCtx& ctx))
+{
+  BinarySchema::build_internal::TypeBuilder** existing_type = type_tbl::Upsert(&type_table, allocator, name.hash_str);
+
+  if (*existing_type == nullptr)
+  {
+    BinarySchema::build_internal::TypeBuilder* const new_type = type_lst::EmplaceBack(allocator, &type_list);
+
+    new_type->name          = name;
+    new_type->flags         = flags;
+    new_type->size          = static_cast<SizeType>(size);
+    new_type->alignment     = static_cast<std::uint16_t>(alignment);
+    new_type->member_offset = std::uint32_t(member_list.size);
+    new_type->member_count  = 0u;
+
+    *existing_type = new_type;
+
+    const BuildCtx ctx{this, new_type};
+
+    Builder(ctx);
+  }
+
+  return *existing_type;
+}
+
+#pragma endregion
+
+#pragma region Runtime API
+
+bool BinarySchema::SaveSchema(binaryIO::IOStream* const stream, const Schema& schema)
+{
+  const SchemaHeader& header = schema;
+
+  binaryIO::IOStream_Write(stream, &header, sizeof(header));
+  binaryIO::IOStream_Write(stream, schema.types.get(), schema.data_size);
+
+  return stream->error_state == binaryIO::IOErrorCode::Success;
+}
+
+bool BinarySchema::SaveObject(binaryIO::IOStream* const stream, const SchemaType& type, const void* const data)
+{
+  return WriteInternal::WriteUnqualifiedType(stream, data, type) == binaryIO::IOErrorCode::Success;
+}
+
+bool BinarySchema::LoadSchema(binaryIO::IOStream* const stream, Schema* const schema, IPolymorphicAllocator& allocator)
+{
+  const binaryIO::IOResult header_read_error = binaryIO::IOStream_Read(stream, schema, sizeof(SchemaHeader));
+
+  if (header_read_error.ErrorCode() == binaryIO::IOErrorCode::Success)
+  {
+    const std::uint64_t     data_size = schema->data_size;
+    const SharedPtr<byte[]> data      = bfMemMakeShared<byte[]>(&allocator, data_size, alignof(SchemaType));
+
+    const binaryIO::IOResult data_read_error = binaryIO::IOStream_Read(stream, data.get(), data_size);
+
+    if (data_read_error.ErrorCode() == binaryIO::IOErrorCode::Success)
+    {
+      if (VerifySchema(*schema))
+      {
+        return true;
+      }
+    }
+  }
+
+  *schema = {};
+  return false;
+}
+
+bool BinarySchema::LoadObject(binaryIO::IOStream* const stream, const SchemaType& type, void* const data, IPolymorphicAllocator& allocator)
+{
+  return ReadInternal::ReadUnqualifiedType(stream, allocator, data, type) == binaryIO::IOErrorCode::Success;
+}
+
+void BinarySchema::ConvertObject(const void* const src_struct, const SchemaType& src_type, void* const dst_struct, const SchemaType& dst_type, IPolymorphicAllocator& dst_memory)
+{
+  return ConvertInternal::ConvertUnqualifiedType(dst_memory, src_struct, dst_struct, src_type, dst_type);
+}
+
+bool BinarySchema::UpgradeObject(binaryIO::IOStream* const stream, const SchemaType& dst_type, void* const dst_struct, IPolymorphicAllocator& allocator, const SchemaType& src_type)
+{
+  if (src_type == dst_type)
+  {
+    return LoadObject(stream, dst_type, dst_struct, allocator);
+  }
+  else
+  {
+    void* const src_struct = MemAllocate(allocator, src_type.m_Size, src_type.m_Alignment).ptr;
+
+    if (src_struct != nullptr)
+    {
+      const bool loaded_src_struct = LoadObject(stream, src_type, src_struct, allocator);
+
+      if (loaded_src_struct)
+      {
+        ConvertObject(src_struct, src_type, dst_struct, dst_type, allocator);
+      }
+
+      BinarySchema::FreeDynamicMemory(allocator, src_type, src_struct);
+      MemDeallocate(allocator, src_struct, src_type.m_Size, src_type.m_Alignment);
+
+      return loaded_src_struct;
+    }
+
+    return false;
+  }
+}
+
+void BinarySchema::FreeDynamicMemory(IPolymorphicAllocator& memory, const SchemaType& type, void* const data)
+{
+  FreeInternal::FreeUnqualifiedType(memory, data, type);
+}
+
+#pragma endregion
 
 /******************************************************************************/
 /*

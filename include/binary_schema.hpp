@@ -20,10 +20,12 @@
 #include "binaryio/binary_types.hpp"
 #include "binaryio/rel_ptr.hpp"  // rel_ptr32, rel_array32
 
-#include "memory/basic_types.hpp"  // byte, IPolymorphicAllocator, MemoryRequirements
+#include "memory/basic_types.hpp"    // byte, IPolymorphicAllocator, MemoryRequirements
+#include "memory/smart_pointer.hpp"  // SharedPtr<T>
 
-#include <memory>    // shared_ptr
-#include <optional>  // optional
+#include <memory>       // shared_ptr
+#include <optional>     // optional
+#include <type_traits>  // underlying_type_t, remove_reference_t, remove_cv_t
 
 #ifndef BINARY_SCHEMA_BUILD_VALIDATION
 #define BINARY_SCHEMA_BUILD_VALIDATION 1  //!< For retail builds should be set to `0`, provides extra validation when building the schema.
@@ -35,10 +37,6 @@
 
 namespace BinarySchema
 {
-  //
-  // Schema API
-  //
-
   using SizeType       = std::uint32_t;
   using ArrayCountType = std::uint32_t;
 
@@ -59,6 +57,11 @@ namespace BinarySchema
 
     std::uint32_t hash;
 
+    constexpr HashStr32(const std::uint32_t hash) noexcept :
+      hash(hash)
+    {
+    }
+
     constexpr HashStr32(const char* str) noexcept :
       hash(FNV1a32(str))
     {
@@ -71,34 +74,10 @@ namespace BinarySchema
   };
   static_assert(sizeof(HashStr32) == sizeof(std::uint32_t), "Expected to only be the size of a u32.");
 
-  template<typename T>
-  struct HashStr32Table
+  struct StrName
   {
-    binaryIO::rel_ptr32<HashStr32> keys;
-    binaryIO::rel_ptr32<T>         values;
-    std::uint32_t                  size;
-
-    template<typename F>
-    void ForEach(F&& callback) const
-    {
-      for (std::uint32_t i = 0u; i < size; ++i)
-      {
-        callback(keys[i], values[i]);
-      }
-    }
-
-    T* Find(const HashStr32 name) const noexcept
-    {
-      for (std::uint32_t i = 0u; i < size; ++i)
-      {
-        if (keys[i] == name)
-        {
-          return &values[i];
-        }
-      }
-
-      return nullptr;
-    }
+    std::uint32_t             hash;
+    binaryIO::rel_ptr32<char> debug_name;
   };
 
   /*!
@@ -135,6 +114,7 @@ namespace BinarySchema
 
   struct StructureMember
   {
+    StrName                                      name;
     binaryIO::rel_ptr32<const struct SchemaType> base_type;
     binaryIO::rel_array32<TypeByteCode>          type_ctors;
     SizeType                                     offset;
@@ -144,18 +124,16 @@ namespace BinarySchema
     inline const void* GetMemberData(const void* const struct_ptr) const noexcept { return reinterpret_cast<const byte*>(struct_ptr) + offset; }
     bool               IsConvertCompatibleWith(const StructureMember& rhs) const noexcept;
   };
-  static_assert(sizeof(StructureMember) == 16u, "");
+  static_assert(sizeof(StructureMember) == 24u, "");
 
   enum class SchemaTypeFlags : std::uint16_t
   {
-    None            = 0x0,
-    IsTrivial       = (1 << 0),  //!< The type will be bulk copied, rather than (de)serialized member by member.
-    IsScalar        = (1 << 1),  //!< The type is numeric.
-    IsFloatingPoint = (1 << 2),  //!< The type is a floating point.
+    None      = 0x0,
+    IsTrivial = (1 << 0),  //!< The type will be bulk copied, rather than (de)serialized member by member.
+    IsScalar  = (1 << 1),  //!< The type is numeric.
 
-    IsEndianDependent  = IsTrivial | IsScalar,  //!< Will be (de)serialized in a way that byte order is taken into account (see `ByteOrder`).
     IntegerFlags       = IsTrivial | IsScalar,
-    FloatingPointFlags = IsTrivial | IsScalar | IsFloatingPoint,
+    FloatingPointFlags = IsTrivial | IsScalar,
   };
   inline std::uint32_t operator&(const SchemaTypeFlags lhs, const SchemaTypeFlags rhs)
   {
@@ -164,20 +142,17 @@ namespace BinarySchema
 
   struct SchemaType
   {
-    HashStr32                       m_Name;
-    SchemaTypeFlags                 m_Flags;
-    std::uint16_t                   m_Alignment;
-    SizeType                        m_Size;
-    HashStr32Table<StructureMember> m_Members;
+    StrName                                m_Name;
+    SchemaTypeFlags                        m_Flags;
+    std::uint16_t                          m_Alignment;
+    SizeType                               m_Size;
+    binaryIO::rel_array32<StructureMember> m_Members;
 
-    bool             IsTrivial() const { return m_Flags & SchemaTypeFlags::IsTrivial; }
-    bool             IsScalar() const { return m_Flags & SchemaTypeFlags::IsScalar; }
-    bool             IsIntScalar() const { return m_Flags & SchemaTypeFlags::IntegerFlags; }
-    bool             IsFloatScalar() const { return m_Flags & SchemaTypeFlags::FloatingPointFlags; }
-    bool             IsEndianDependent() const { return (m_Flags & SchemaTypeFlags::IsEndianDependent) && m_Size > 1 && m_Size <= sizeof(std::uint64_t); }
-    StructureMember* FindMember(const HashStr32 name) const;
+    bool                   IsTrivial() const { return m_Flags & SchemaTypeFlags::IsTrivial; }
+    bool                   IsIntScalar() const { return m_Flags & SchemaTypeFlags::IntegerFlags; }
+    const StructureMember* FindMember(const HashStr32 name) const;
   };
-  static_assert(sizeof(SchemaType) == 24u, "When this changes must bump `SchemaHeaderVersion` and modify the `Schema::Load` function.");
+  static_assert(sizeof(SchemaType) == 24u, "");
 
   bool        operator==(const SchemaType& lhs, const SchemaType& rhs);
   inline bool operator!=(const SchemaType& lhs, const SchemaType& rhs)
@@ -185,315 +160,107 @@ namespace BinarySchema
     return !(lhs == rhs);
   }
 
-  enum SchemaHeaderVersion : binaryIO::VersionType
+  struct SchemaHeader : public binaryIO::BaseBinaryChunkHeader<SchemaHeader, 0, binaryIO::MakeChunkTypeID("SBIN")>
   {
-    SCHEMA_VERSION_INITIAL = 0,  //!< Initial version of the binary schema format.
-
-    SCHEMA_VERSION_ONE_PAST_LAST,                               //!< Only used to be able to automatically calculate `SCHEMA_VERSION_CURRENT`.
-    SCHEMA_VERSION_CURRENT = SCHEMA_VERSION_ONE_PAST_LAST - 1,  //!< Current version of the format.
-  };
-
-  struct SchemaHeader : public binaryIO::BaseBinaryChunkHeader<SchemaHeader, SCHEMA_VERSION_CURRENT, binaryIO::MakeChunkTypeID("SBIN")>
-  {
-    std::uint32_t num_types = 0u;
+    std::uint32_t num_types           = 0u;
+    std::uint32_t num_members         = 0u;
+    std::uint32_t num_qualifiers      = 0u;
+    std::uint32_t string_table_length = 0u;
 
     SchemaHeader() = default;
   };
-  static_assert(sizeof(SchemaHeader) == 24u, "When this changes must bump `SchemaHeaderVersion` and modify the `Schema::Load` function.");
+  static_assert(sizeof(SchemaHeader) == 32u, "");
 
-  struct Schema
+  struct Schema : public SchemaHeader
   {
-    SchemaHeader                  header;
-    std::shared_ptr<const byte[]> data_bytes;
+    SharedPtr<SchemaType[]> types = nullptr;
 
-    const SchemaType* Types() const;
     const SchemaType* FindType(const HashStr32 name) const;
 
-    binaryIO::IOErrorCode Write(binaryIO::IOStream* const stream) const;
-
-    static std::optional<Schema> Load(binaryIO::IOStream* const stream, IPolymorphicAllocator& allocator);
-
-    // Buffer lifetime externally managed.
-    static std::optional<Schema> FromBuffer(const void* const buffer, const std::size_t buffer_size);
+    template<typename T>
+    const SchemaType* FindType() const;
   };
 
-  //
-  // Builder API
-  //
+  // Memory -> IOStream: Serialize
+
+  bool SaveSchema(binaryIO::IOStream* const stream, const Schema& schema);
+  bool SaveObject(binaryIO::IOStream* const stream, const SchemaType& type, const void* const data);
 
   template<typename T>
-  struct SchemaBuilderList
+  bool SaveObject(binaryIO::IOStream* const stream, const Schema& schema, const T& data)
   {
-    T*            head         = nullptr;
-    T*            tail         = nullptr;
-    std::uint32_t num_elements = 0u;
+    return SaveObject(stream, *schema.FindType<T>(), &data);
+  }
 
-    T*   Append(const AllocatorView memory);
-    void Free(const AllocatorView memory);
-  };
+  // IOStream -> Memory: Deserialize
 
-  struct SchemaBuilderMemberQualifier
-  {
-    TypeConstructorFlags flags;
+  bool LoadSchema(binaryIO::IOStream* const stream, Schema* const schema, IPolymorphicAllocator& allocator);
+  bool LoadObject(binaryIO::IOStream* const stream, const SchemaType& type, void* const data, IPolymorphicAllocator& allocator);
 
-    union
-    {
-      ArrayCountType fixed;
-      HashStr32      dynamic;
+  // Memory -> Memory: Convert from in memory to in memory across schemas.
 
-    } num_elements;
+  void ConvertObject(const void* const src_struct, const SchemaType& src_type, void* const dst_struct, const SchemaType& dst_type, IPolymorphicAllocator& dst_memory);
 
-    SchemaBuilderMemberQualifier* next;
-  };
+  // Combined LoadObject + Convert optimized for the case when the src_type and dst_type types are the same.
 
-  struct SchemaBuilderMemberNode
-  {
-    HashStr32                                       name;
-    HashStr32                                       base_type;
-    SchemaBuilderList<SchemaBuilderMemberQualifier> qualifiers;
-    SizeType                                        offset;
-    SchemaBuilderMemberNode*                        next;
-  };
-
-  struct SchemaBuilderTypeNode
-  {
-    SchemaTypeFlags                            flags;
-    HashStr32                                  name;
-    SizeType                                   size;
-    std::uint32_t                              alignment;
-    SchemaBuilderList<SchemaBuilderMemberNode> members;
-    SchemaBuilderTypeNode*                     next;
-  };
-
-  class MemberBuilder
-  {
-   private:
-    AllocatorView            m_Allocator;
-    SchemaBuilderTypeNode&   m_Type;
-    SchemaBuilderMemberNode& m_Member;
-
-   public:
-    MemberBuilder(const AllocatorView allocator, SchemaBuilderTypeNode& type, SchemaBuilderMemberNode& member) :
-      m_Allocator{allocator},
-      m_Type{type},
-      m_Member{member}
-    {
-    }
-
-    MemberBuilder(const MemberBuilder& rhs) = delete;
-
-    inline const MemberBuilder& Pointer() const
-    {
-      return AddQualifier(TypeConstructorFlags::Pointer, 1u);
-    }
-
-    inline const MemberBuilder& Array(const ArrayCountType fixed_size) const
-    {
-      return AddQualifier(TypeConstructorFlags::InlineArray, fixed_size);
-    }
-
-    // Dynamic member must come before this array type.
-    inline const MemberBuilder& Array(const HashStr32 dynamic_size) const
-    {
-#if BINARY_SCHEMA_BUILD_VALIDATION
-      binaryIOAssert(m_Member.name != dynamic_size, "Assigning dynamic size recursively is not valid.");
-
-      SchemaBuilderMemberNode* dynamic_size_member = nullptr;
-      for (auto member = m_Type.members.head; member; member = member->next)
-      {
-        if (member->name == dynamic_size)
-        {
-          dynamic_size_member = member;
-          break;
-        }
-      }
-
-      binaryIOAssert(dynamic_size_member, "Dynamic size member must be registered before the dynamic array member.");
-#endif
-
-      return AddQualifier(TypeConstructorFlags::DynamicArray, dynamic_size.hash);
-    }
-
-    inline const MemberBuilder& FixedHeap(const ArrayCountType fixed_size) const
-    {
-      return AddQualifier(TypeConstructorFlags::FixedHeap, fixed_size);
-    }
-
-   private:
-    const MemberBuilder& AddQualifier(TypeConstructorFlags flags_part, std::uint32_t size_part) const;
-  };
-
-  class TypeBuilder
-  {
-   private:
-    AllocatorView          m_Allocator;
-    SchemaBuilderTypeNode& m_Type;
-
-   public:
-    TypeBuilder(const AllocatorView allocator, SchemaBuilderTypeNode& type) :
-      m_Allocator{allocator},
-      m_Type{type}
-    {
-    }
-
-    TypeBuilder(const TypeBuilder& rhs) = delete;
-
-    MemberBuilder AddMember(const HashStr32 name, const HashStr32 type_name, const std::size_t offset);
-  };
-
-  struct SchemaBuilderEndToken
-  {
-    friend class SchemaBuilder;
-
-    MemoryRequirements memory_requirements;
-
-   private:
-    SchemaBuilderEndToken(const MemoryRequirements num_bytes_needed) :
-      memory_requirements{num_bytes_needed}
-    {
-    }
-  };
-
-  class SchemaBuilder
-  {
-   private:
-    std::uint32_t          m_NumTypes     = 0u;
-    IPolymorphicAllocator* m_Memory       = nullptr;
-    SchemaBuilderTypeNode* m_TypeListHead = nullptr;
-
-   public:
-    SchemaBuilder() = default;
-
-    SchemaBuilder(const SchemaBuilder& rhs)            = delete;
-    SchemaBuilder(SchemaBuilder&& rhs)                 = delete;
-    SchemaBuilder& operator=(const SchemaBuilder& rhs) = delete;
-    SchemaBuilder& operator=(SchemaBuilder&& rhs)      = delete;
-
-    template<typename T>
-    TypeBuilder AddType(HashStr32 name, SchemaTypeFlags flags = SchemaTypeFlags::None)
-    {
-      return AddType(name, sizeof(T), alignof(T), flags);
-    }
-
-    void                  Begin(IPolymorphicAllocator& working_memory);
-    TypeBuilder           AddType(HashStr32 name, std::uint32_t size, std::uint32_t alignment, SchemaTypeFlags flags = SchemaTypeFlags::None);
-    SchemaBuilderEndToken End();
-
-    /*!
-     * @brief
-     *   Must be called after `SchemaBuilder::End` with the returned end token.
-     *
-     * @param memory
-     *   must be atleast `SchemaBuilderEndToken::memory_requirements.size` bytes in size and
-     *   aligned to `SchemaBuilderEndToken::memory_requirements.alignment`.
-     *
-     * @param end_token
-     *   The value returned by `SchemaBuilder::End` with info on how to construct the Schema.
-     *
-     * @return
-     *   The built schema, `memory` is non owned so must be free manually.
-     */
-    std::optional<Schema> Build(void* const memory, const SchemaBuilderEndToken& end_token) const;
-    std::optional<Schema> Build(IPolymorphicAllocator& allocator, const SchemaBuilderEndToken& end_token) const;
-
-    void ReleaseResources();
-
-    ~SchemaBuilder() { ReleaseResources(); }
-
-   private:
-    std::optional<Schema> BuildInternal(std::shared_ptr<byte[]>&& data_buffer, const SchemaBuilderEndToken& end_token) const;
-  };
-
-  void AddBasicScalarTypes(SchemaBuilder* const builder);
-
-  //
-  // Serialize API
-  //
-
-  /*!
-   * @brief
-   *   Byte order used when reading or writing a scalar value.
-   *
-   *   To add a new byte order you must update any code marked "@ByteOrder" in binary_schema.cpp.
-   */
-  enum class ByteOrder : std::uint8_t
-  {
-    Native,        //!< Endianness will not be taken into account, read / written in the current machine's byte order, fastest read/write for trivial types.
-    LittleEndian,  //!< Scalar types up to 64bits will be read / written as little endian.
-    BigEndian,     //!< Scalar types up to 64bits will be read / written as big endian.
-  };
-
-  // Goes from in memory to byte stream.
-
-  binaryIO::IOErrorCode Write(binaryIO::IOStream* const stream, const SchemaType& type, const void* const data, const ByteOrder byte_order = ByteOrder::Native);
-  binaryIO::IOErrorCode Write(binaryIO::IOStream* const stream, const Schema& schema, const HashStr32 type_name, const void* const data, const ByteOrder byte_order = ByteOrder::Native);
-
-  // Goes from byte stream to in memory representation.
-
-  binaryIO::IOErrorCode Read(binaryIO::IOStream* const stream, IPolymorphicAllocator& memory, const SchemaType& type, void* const data, const ByteOrder byte_order = ByteOrder::Native);
-  binaryIO::IOErrorCode Read(binaryIO::IOStream* const stream, IPolymorphicAllocator& memory, const Schema& schema, const HashStr32 type_name, void* const data, const ByteOrder byte_order = ByteOrder::Native);
-
-  // Convert from in memory to in memory across schemas.
-  // `src_struct` and `dst_struct` expected to have the same endianness.
-
-  void Convert(const void* const src_struct, const SchemaType& src_type, void* const dst_struct, const SchemaType& dst_type, IPolymorphicAllocator& dst_memory);
-  void Convert(const void* const src_struct, const Schema& src_schema, void* const dst_struct, const Schema& dst_schema, IPolymorphicAllocator& dst_memory, HashStr32 type_name);
-
-  // Combined Read + Convert optimized for the case when the src_schema and dst_struct types are the same.
-
-  binaryIO::IOErrorCode Upgrade(binaryIO::IOStream* const stream, IPolymorphicAllocator& memory, const SchemaType& src_type, const SchemaType& dst_type, void* const dst_struct, const ByteOrder byte_order = ByteOrder::Native);
-  binaryIO::IOErrorCode Upgrade(binaryIO::IOStream* const stream, IPolymorphicAllocator& memory, const Schema& src_schema, const Schema& dst_schema, void* const dst_struct, const HashStr32 type_name, const ByteOrder byte_order = ByteOrder::Native);
+  bool UpgradeObject(binaryIO::IOStream* const stream, const SchemaType& dst_type, void* const dst_struct, IPolymorphicAllocator& allocator, const SchemaType& src_type);
 
   // Frees any memory dynamically allocated from either a Read, Convert or Upgrade.
 
   void FreeDynamicMemory(IPolymorphicAllocator& memory, const SchemaType& type, void* const data);
-  void FreeDynamicMemory(IPolymorphicAllocator& memory, const Schema& schema, const HashStr32 type_name, void* const data);
 
-}  // namespace BinarySchema
+  template<typename T>
+  struct DynArray
+  {
+    T* ptr = nullptr;
 
-#define BinarySchema_RegisterTypeEx(T, custom_name, flags, ...)                          \
-  [](BinarySchema::SchemaBuilder* const builder) -> void {                               \
-    using type = T;                                                                      \
-                                                                                         \
-    BinarySchema::TypeBuilder type_builder = builder->AddType<type>(custom_name, flags); \
-    __VA_ARGS__;                                                                         \
-  }
+    DynArray(T* const ptr = nullptr) :
+      ptr{ptr}
+    {
+    }
 
-#define BinarySchema_RegisterTypeWithFlags(T, flags, ...) \
-  BinarySchema_RegisterTypeEx(T, #T, flags, __VA_ARGS__)
+    T& operator[](const std::size_t index) const { return ptr[index]; }
+  };
 
-#define BinarySchema_RegisterType(T, ...) \
-  BinarySchema_RegisterTypeEx(T, #T, ::BinarySchema::SchemaTypeFlags::None, __VA_ARGS__)
-
-#define BinarySchema_RegisterTrivialType(T, ...) \
-  BinarySchema_RegisterTypeEx(T, #T, ::BinarySchema::SchemaTypeFlags::IsTrivial, __VA_ARGS__)
-
-#define BinarySchema_MemberEx(type_field_name, member_name, member_type) \
-  type_builder.AddMember(member_name, member_type, offsetof(type, type_field_name))
-
-#define BinarySchema_Member(member_name, member_type) \
-  BinarySchema_MemberEx(member_name, #member_name, member_type)
-
-#include <type_traits>
-
-namespace bin_schema
-{
-  using BinarySchema::ArrayCountType;
-  using BinarySchema::HashStr32;
-  using BinarySchema::SizeType;
-  using BinarySchema::TypeConstructorFlags;
+  template<typename T, std::size_t N>
+  struct FixedArray : public DynArray<T>
+  {
+  };
 
 #pragma region Builders
 
+  struct BuildCtx;
+
+  struct BuilderName
+  {
+    constexpr std::uint32_t StringLength(const char* const str)
+    {
+      std::uint32_t n = 0;
+      while (str[n] != '\0')
+      {
+        ++n;
+      }
+      return n;
+    }
+
+    const char*   str;
+    std::uint32_t str_length;
+    HashStr32     hash_str;
+
+    constexpr BuilderName(const char* const str) :
+      str{str},
+      str_length{StringLength(str)},
+      hash_str{str}
+    {
+    }
+  };
+
   namespace build_internal
   {
-    struct TempListChunk
-    {
-      void*          data     = nullptr;
-      std::uint32_t  size     = 0;
-      std::uint32_t  capacity = 0;
-      TempListChunk* next     = nullptr;
-    };
+    struct MemberBuilder;
+    struct TempListChunk;
+    struct TypeBuilder;
+    struct TypeTableChunk;
 
     template<typename T>
     struct TempList
@@ -501,91 +268,73 @@ namespace bin_schema
       TempListChunk* head_chunk = nullptr;
       TempListChunk* tail_chunk = nullptr;
       std::size_t    size       = 0u;
-
-      TempList(const TempList& rhs)            = default;
-      TempList(TempList&& rhs)                 = default;
-      TempList& operator=(const TempList& rhs) = default;
-      TempList& operator=(TempList&& rhs)      = default;
-      ~TempList()                              = default;
     };
 
-    struct MemberQualifier
+    struct TypeBuilderTable
     {
-      TypeConstructorFlags flags;
-      union
-      {
-        ArrayCountType fixed;
-        std::uint32_t  dynamic;
-
-      } num_elements;
+      TypeTableChunk* tail_chunk = nullptr;
     };
 
-    template<typename T, typename CallbackFn>
-    void ForEach(const TempList<T>& list, CallbackFn&& Callback)
+    using TypeBuilderList = TempList<TypeBuilder>;
+    using MemberList      = TempList<MemberBuilder>;
+    using QualifierList   = TempList<TypeByteCode>;
+    using StringList      = TempList<const char*>;
+
+    template<typename T>
+    struct IsDynArray : std::false_type
     {
-      const TempListChunk* chunk        = list.head_chunk;
-      std::size_t          global_index = 0u;
+    };
 
-      while (chunk != nullptr)
-      {
-        const std::size_t          chunk_size = chunk->size;
-        const TempListChunk* const chunk_next = chunk->next;
-        T* const                   chunk_data = static_cast<T*>(chunk->data);
-
-        for (std::size_t local_index = 0u; local_index < chunk_size; ++local_index)
-        {
-          Callback(global_index + local_index, chunk_data[local_index]);
-        }
-
-        global_index += chunk_size;
-        chunk         = chunk_next;
-      }
-    }
+    template<typename T>
+    struct IsDynArray<DynArray<T>> : std::true_type
+    {
+    };
   }
 
-  struct TypeBuilder
+  struct Builder
   {
-    void MarkAsTrivial();
+    AllocatorView                    allocator;
+    build_internal::TypeBuilderTable type_table;
+    build_internal::TypeBuilderList  type_list;
+    build_internal::MemberList       member_list;
+    build_internal::QualifierList    qualifier_list;
+
+    Builder(const AllocatorView allocator);
+    ~Builder();
+
+    template<typename T>
+    build_internal::TypeBuilder* AddType();
+
+    Schema BuildSchema(IPolymorphicAllocator& allocator) const;
+
+    Builder(const Builder& rhs)            = delete;
+    Builder(Builder&& rhs)                 = delete;
+    Builder& operator=(const Builder& rhs) = delete;
+    Builder& operator=(Builder&& rhs)      = delete;
+
+   private:
+    build_internal::TypeBuilder* AddType_Internal(const BuilderName name, const SchemaTypeFlags flags, const std::size_t size, const std::size_t alignment, void (*Builder)(const BuildCtx& ctx));
+  };
+
+  struct BuildCtx
+  {
+    Builder*                     builder;
+    build_internal::TypeBuilder* type;
 
     template<typename ClassType, typename MemberType>
-    void AddMember(const BinarySchema::HashStr32 member_name, MemberType ClassType::* member_ptr);
+    void AddMember(const BuilderName member_name, MemberType ClassType::* member_ptr) const;
+
+    template<typename ClassType, typename T>
+    void AddMember(const BuilderName member_name, DynArray<T> ClassType::* member_ptr, const HashStr32 length_name) const;
+
+    static void SetBaseType(build_internal::MemberBuilder& member, const build_internal::TypeBuilder* const type);
+
+   private:
+    void                           AddQualifier(build_internal::MemberBuilder& member, TypeConstructorFlags flags_part, std::uint32_t size_part) const;
+    build_internal::MemberBuilder& AddMember_Internal(const BuilderName name, const SizeType byte_offset) const;
   };
 
 #pragma endregion
-
-  template<typename T>
-  struct Info;
-
-  template<typename T>
-  void RegisterSchema(BinarySchema::TypeBuilder& type_builder);
-
-  // clang-format off
-  template<> struct Info<bool>          { static constexpr const BinarySchema::HashStr32 TypeName = "bool"; };
-  template<> struct Info<char>          { static constexpr const BinarySchema::HashStr32 TypeName = "char"; };
-  template<> struct Info<std::uint8_t>  { static constexpr const BinarySchema::HashStr32 TypeName = "u8";   };
-  template<> struct Info<std::uint16_t> { static constexpr const BinarySchema::HashStr32 TypeName = "u16";  };
-  template<> struct Info<std::uint32_t> { static constexpr const BinarySchema::HashStr32 TypeName = "u32";  };
-  template<> struct Info<std::uint64_t> { static constexpr const BinarySchema::HashStr32 TypeName = "u64";  };
-  template<> struct Info<std::int8_t>   { static constexpr const BinarySchema::HashStr32 TypeName = "i8";   };
-  template<> struct Info<std::int16_t>  { static constexpr const BinarySchema::HashStr32 TypeName = "i16";  };
-  template<> struct Info<std::int32_t>  { static constexpr const BinarySchema::HashStr32 TypeName = "i32";  };
-  template<> struct Info<std::int64_t>  { static constexpr const BinarySchema::HashStr32 TypeName = "i64";  };
-  template<> struct Info<float>         { static constexpr const BinarySchema::HashStr32 TypeName = "flt";  };
-  template<> struct Info<double>        { static constexpr const BinarySchema::HashStr32 TypeName = "dbl";  };
-  // template<> struct Info<long double>   { static constexpr const BinarySchema::HashStr32 TypeName = "f64x"; };
-  // clang-format on
-
-  template<auto CountMember, typename T>
-  struct DynArray
-  {
-    T* data = nullptr;
-  };
-
-  template<typename T, std::size_t N>
-  struct FixedArray
-  {
-    T* data = nullptr;
-  };
 
   namespace emit_internal
   {
@@ -620,71 +369,111 @@ namespace bin_schema
   template<typename T>
   struct Emit_MemberBuilder
   {
-    static void Emit(BinarySchema::MemberBuilder& member_builder)
+    static void Emit(const BuildCtx& ctx, build_internal::MemberBuilder& member_builder)
     {
+      BuildCtx::SetBaseType(member_builder, ctx.builder->AddType<T>());
     }
   };
 
   template<typename T>
   struct Emit_MemberBuilder<T*>
   {
-    static void Emit(BinarySchema::MemberBuilder& member_builder)
+    static void Emit(const BuildCtx& ctx, build_internal::MemberBuilder& member_builder)
     {
-      member_builder.Pointer();
-      Emit_MemberBuilder<emit_internal::StripType<T>>::Emit(member_builder);
+      ctx.AddQualifier(member_builder, TypeConstructorFlags::Pointer, 1u);
+      Emit_MemberBuilder<emit_internal::StripType<T>>::Emit(ctx, member_builder);
     }
   };
 
   template<typename T, std::size_t N>
   struct Emit_MemberBuilder<T[N]>
   {
-    static void Emit(BinarySchema::MemberBuilder& member_builder)
+    static void Emit(const BuildCtx& ctx, build_internal::MemberBuilder& member_builder)
     {
-      member_builder.Array(N);
-      Emit_MemberBuilder<emit_internal::StripType<T>>::Emit(member_builder);
+      ctx.AddQualifier(member_builder, TypeConstructorFlags::InlineArray, N);
+      Emit_MemberBuilder<emit_internal::StripType<T>>::Emit(ctx, member_builder);
     }
   };
 
   template<typename T, std::size_t N>
   struct Emit_MemberBuilder<FixedArray<T, N>>
   {
-    static void Emit(BinarySchema::MemberBuilder& member_builder)
+    static void Emit(const BuildCtx& ctx, build_internal::MemberBuilder& member_builder)
     {
-      member_builder.FixedHeap(N);
-      Emit_MemberBuilder<emit_internal::StripType<T>>::Emit(member_builder);
+      ctx.AddQualifier(member_builder, TypeConstructorFlags::FixedHeap, N);
+      Emit_MemberBuilder<emit_internal::StripType<T>>::Emit(ctx, member_builder);
     }
   };
 
-  template<auto CountMember, typename T>
-  struct Emit_MemberBuilder<DynArray<CountMember, T>>
+  struct TypeInfo
   {
-    static void Emit(BinarySchema::MemberBuilder& member_builder)
-    {
-      member_builder.Array(emit_internal::offset_of(CountMember));
-      Emit_MemberBuilder<emit_internal::StripType<T>>::Emit(member_builder);
-    }
+    BuilderName     name;
+    SchemaTypeFlags flags;
   };
 
-  template<typename ClassType, typename MemberType>
-  static void AddMember(BinarySchema::TypeBuilder& type_builder, const BinarySchema::HashStr32 member_name, MemberType ClassType::* member_ptr)
+  template<typename T>
+  inline constexpr TypeInfo Type;  // = undefined;
+
+  template<typename T>
+  void DeclareMembers(const BuildCtx& ctx);  // = undefined;
+
+  template<typename T>
+  build_internal::TypeBuilder* Builder::AddType()
   {
-    using RawMemberType = emit_internal::StripType<MemberType>;
+    constexpr TypeInfo type_info = Type<T>;
 
-    BinarySchema::MemberBuilder member_builder = type_builder.AddMember(member_name, Info<RawMemberType>::TypeName, emit_internal::offset_of(member_ptr));
-
-    Emit_MemberBuilder<RawMemberType>::Emit(member_builder);
+    return AddType_Internal(type_info.name, type_info.flags, sizeof(T), alignof(T), &DeclareMembers<T>);
   }
 
   template<typename ClassType, typename MemberType>
-  void TypeBuilder::AddMember(const BinarySchema::HashStr32 member_name, MemberType ClassType::* member_ptr)
+  void BuildCtx::AddMember(const BuilderName member_name, MemberType ClassType::* member_ptr) const
   {
+    static_assert(!build_internal::IsDynArray<std::remove_cv_t<MemberType>>::value, "DynArray must specify the member used for the element count.");
+
     using RawMemberType = emit_internal::StripType<MemberType>;
 
-    // BinarySchema::MemberBuilder member_builder = type_builder.AddMember(member_name, Info<RawMemberType>::TypeName, emit_internal::offset_of(member_ptr));
+    build_internal::MemberBuilder& member_builder = AddMember_Internal(member_name, static_cast<SizeType>(emit_internal::offset_of(member_ptr)));
 
-    // Emit_MemberBuilder<RawMemberType>::Emit(member_builder);
+    Emit_MemberBuilder<RawMemberType>::Emit(*this, member_builder);
+  }
+
+  template<typename ClassType, typename T>
+  void BuildCtx::AddMember(const BuilderName member_name, DynArray<T> ClassType::* member_ptr, const HashStr32 length_name) const
+  {
+    using RawMemberType = emit_internal::StripType<T>;
+
+    build_internal::MemberBuilder& member_builder = AddMember_Internal(member_name, static_cast<SizeType>(emit_internal::offset_of(member_ptr)));
+
+    AddQualifier(member_builder, TypeConstructorFlags::DynamicArray, length_name.hash);
+    Emit_MemberBuilder<RawMemberType>::Emit(*this, member_builder);
+  }
+
+  template<typename T>
+  const SchemaType* Schema::FindType() const
+  {
+    return FindType(BinarySchema::Type<T>.name.hash_str);
   }
 }
+
+#define BinarySchema_Type(T, flags)                                                                           \
+  template<>                                                                                                  \
+  inline constexpr BinarySchema::TypeInfo BinarySchema::Type<T> = {#T, BinarySchema::SchemaTypeFlags::flags}; \
+                                                                                                              \
+  template<>                                                                                                  \
+  inline void BinarySchema::DeclareMembers<T>(const BinarySchema::BuildCtx& ctx)
+
+BinarySchema_Type(bool, IsTrivial) {}
+BinarySchema_Type(char, IntegerFlags) {}
+BinarySchema_Type(std::uint8_t, IntegerFlags) {}
+BinarySchema_Type(std::uint16_t, IntegerFlags) {}
+BinarySchema_Type(std::uint32_t, IntegerFlags) {}
+BinarySchema_Type(std::uint64_t, IntegerFlags) {}
+BinarySchema_Type(std::int8_t, IntegerFlags) {}
+BinarySchema_Type(std::int16_t, IntegerFlags) {}
+BinarySchema_Type(std::int32_t, IntegerFlags) {}
+BinarySchema_Type(std::int64_t, IntegerFlags) {}
+BinarySchema_Type(float, FloatingPointFlags) {}
+BinarySchema_Type(double, FloatingPointFlags) {}
 
 #endif /* BINARY_SCHEMA_HPP */
 
