@@ -23,7 +23,6 @@
 #include "memory/basic_types.hpp"    // byte, IPolymorphicAllocator, MemoryRequirements
 #include "memory/smart_pointer.hpp"  // SharedPtr<T>
 
-#include <memory>       // shared_ptr
 #include <optional>     // optional
 #include <type_traits>  // underlying_type_t, remove_reference_t, remove_cv_t
 
@@ -68,9 +67,6 @@ namespace BinarySchema
     }
 
     HashStr32() noexcept = default;
-
-    inline bool operator==(const HashStr32& rhs) const noexcept { return hash == rhs.hash; }
-    inline bool operator!=(const HashStr32& rhs) const noexcept { return hash != rhs.hash; }
   };
   static_assert(sizeof(HashStr32) == sizeof(std::uint32_t), "Expected to only be the size of a u32.");
 
@@ -90,8 +86,8 @@ namespace BinarySchema
    *     else if flags & FixedSize
    *       num_elements = Read<ArrayCountType>();
    *     else
-   *       member_name  = Read<HashStr32>();
-   *       num_elements = GetDynamicArrayCount(member_name);
+   *       dynamic_size = Read<DynamicSize>();
+   *       num_elements = GetDynamicArrayCount(dynamic_size);
    */
   using TypeByteCode = std::uint8_t;
 
@@ -110,6 +106,19 @@ namespace BinarySchema
     Pointer      = FixedHeap | (1 << SmallFixedSizeShift),
     InlineArray  = FixedSize,
     DynamicArray = HeapAllocated,
+  };
+
+  enum class DynamicSize : std::uint32_t
+  {
+    Int8           = 0b000,
+    Int16          = 0b001,
+    Int32          = 0b010,
+    Int64          = 0b011,
+    SizeClassMask  = 0b011,
+    Unsigned       = 0b000,
+    Signed         = 0b100,
+    SignednessMask = 0b100,
+    OffsetShift    = 3,
   };
 
   struct StructureMember
@@ -149,7 +158,6 @@ namespace BinarySchema
     binaryIO::rel_array32<StructureMember> m_Members;
 
     bool                   IsTrivial() const { return m_Flags & SchemaTypeFlags::IsTrivial; }
-    bool                   IsIntScalar() const { return m_Flags & SchemaTypeFlags::IntegerFlags; }
     const StructureMember* FindMember(const HashStr32 name) const;
   };
   static_assert(sizeof(SchemaType) == 24u, "");
@@ -298,12 +306,19 @@ namespace BinarySchema
     build_internal::TypeBuilderList  type_list;
     build_internal::MemberList       member_list;
     build_internal::QualifierList    qualifier_list;
+    build_internal::TypeBuilder*     current_type;
 
     Builder(const AllocatorView allocator);
     ~Builder();
 
     template<typename T>
     build_internal::TypeBuilder* AddType();
+
+    template<typename ClassType, typename MemberType>
+    void AddMember(const BuilderName member_name, MemberType ClassType::* member_ptr);
+
+    template<typename ClassType, typename T, typename LengthType>
+    void AddMember(const BuilderName member_name, DynArray<T> ClassType::* member_ptr, LengthType ClassType::* length_ptr);
 
     Schema BuildSchema(IPolymorphicAllocator& allocator) const;
 
@@ -312,26 +327,43 @@ namespace BinarySchema
     Builder& operator=(const Builder& rhs) = delete;
     Builder& operator=(Builder&& rhs)      = delete;
 
-   private:
-    build_internal::TypeBuilder* AddType_Internal(const BuilderName name, const SchemaTypeFlags flags, const std::size_t size, const std::size_t alignment, void (*Builder)(const BuildCtx& ctx));
-  };
-
-  struct BuildCtx
-  {
-    Builder*                     builder;
-    build_internal::TypeBuilder* type;
-
-    template<typename ClassType, typename MemberType>
-    void AddMember(const BuilderName member_name, MemberType ClassType::* member_ptr) const;
-
-    template<typename ClassType, typename T>
-    void AddMember(const BuilderName member_name, DynArray<T> ClassType::* member_ptr, const HashStr32 length_name) const;
-
     static void SetBaseType(build_internal::MemberBuilder& member, const build_internal::TypeBuilder* const type);
 
    private:
-    void                           AddQualifier(build_internal::MemberBuilder& member, TypeConstructorFlags flags_part, std::uint32_t size_part) const;
-    build_internal::MemberBuilder& AddMember_Internal(const BuilderName name, const SizeType byte_offset) const;
+    build_internal::TypeBuilder*   AddType_Internal(const BuilderName name, const SchemaTypeFlags flags, const std::size_t size, const std::size_t alignment, void (*Builder)(Builder& ctx));
+    void                           AddQualifier_Internal(build_internal::MemberBuilder& member, TypeConstructorFlags flags_part, std::uint32_t size_part);
+    build_internal::MemberBuilder& AddMember_Internal(const BuilderName name, const SizeType byte_offset);
+
+    template<typename T>
+    static DynamicSize MakeDynamicSize(const std::uint32_t offset)
+    {
+      constexpr DynamicSize size_class = []() -> DynamicSize {
+        if constexpr (std::is_same_v<T, std::uint8_t> || std::is_same_v<T, std::int8_t>)
+        {
+          return DynamicSize::Int8;
+        }
+        else if constexpr (std::is_same_v<T, std::uint16_t> || std::is_same_v<T, std::int16_t>)
+        {
+          return DynamicSize::Int16;
+        }
+        else if constexpr (std::is_same_v<T, std::uint32_t> || std::is_same_v<T, std::int32_t>)
+        {
+          return DynamicSize::Int32;
+        }
+        else if constexpr (std::is_same_v<T, std::uint64_t> || std::is_same_v<T, std::int64_t>)
+        {
+          return DynamicSize::Int64;
+        }
+        else
+        {
+          static_assert(false, "Dynamic Size Length must be an an integer type.");
+        }
+      }();
+
+      constexpr DynamicSize signedness = std::is_signed_v<T> ? DynamicSize::Signed : DynamicSize::Unsigned;
+
+      return static_cast<DynamicSize>(std::uint32_t(size_class) | std::uint32_t(signedness) | offset);
+    }
   };
 
 #pragma endregion
@@ -369,18 +401,18 @@ namespace BinarySchema
   template<typename T>
   struct Emit_MemberBuilder
   {
-    static void Emit(const BuildCtx& ctx, build_internal::MemberBuilder& member_builder)
+    static void Emit(Builder& ctx, build_internal::MemberBuilder& member_builder)
     {
-      BuildCtx::SetBaseType(member_builder, ctx.builder->AddType<T>());
+      Builder::SetBaseType(member_builder, ctx.AddType<emit_internal::StripType<T>>());
     }
   };
 
   template<typename T>
   struct Emit_MemberBuilder<T*>
   {
-    static void Emit(const BuildCtx& ctx, build_internal::MemberBuilder& member_builder)
+    static void Emit(Builder& ctx, build_internal::MemberBuilder& member_builder)
     {
-      ctx.AddQualifier(member_builder, TypeConstructorFlags::Pointer, 1u);
+      ctx.AddQualifier_Internal(member_builder, TypeConstructorFlags::Pointer, 1u);
       Emit_MemberBuilder<emit_internal::StripType<T>>::Emit(ctx, member_builder);
     }
   };
@@ -388,9 +420,9 @@ namespace BinarySchema
   template<typename T, std::size_t N>
   struct Emit_MemberBuilder<T[N]>
   {
-    static void Emit(const BuildCtx& ctx, build_internal::MemberBuilder& member_builder)
+    static void Emit(Builder& ctx, build_internal::MemberBuilder& member_builder)
     {
-      ctx.AddQualifier(member_builder, TypeConstructorFlags::InlineArray, N);
+      ctx.AddQualifier_Internal(member_builder, TypeConstructorFlags::InlineArray, N);
       Emit_MemberBuilder<emit_internal::StripType<T>>::Emit(ctx, member_builder);
     }
   };
@@ -398,9 +430,9 @@ namespace BinarySchema
   template<typename T, std::size_t N>
   struct Emit_MemberBuilder<FixedArray<T, N>>
   {
-    static void Emit(const BuildCtx& ctx, build_internal::MemberBuilder& member_builder)
+    static void Emit(Builder& ctx, build_internal::MemberBuilder& member_builder)
     {
-      ctx.AddQualifier(member_builder, TypeConstructorFlags::FixedHeap, N);
+      ctx.AddQualifier_Internal(member_builder, TypeConstructorFlags::FixedHeap, N);
       Emit_MemberBuilder<emit_internal::StripType<T>>::Emit(ctx, member_builder);
     }
   };
@@ -415,7 +447,7 @@ namespace BinarySchema
   inline constexpr TypeInfo Type;  // = undefined;
 
   template<typename T>
-  void DeclareMembers(const BuildCtx& ctx);  // = undefined;
+  void DeclareMembers(Builder& ctx);  // = undefined;
 
   template<typename T>
   build_internal::TypeBuilder* Builder::AddType()
@@ -426,26 +458,25 @@ namespace BinarySchema
   }
 
   template<typename ClassType, typename MemberType>
-  void BuildCtx::AddMember(const BuilderName member_name, MemberType ClassType::* member_ptr) const
+  void Builder::AddMember(const BuilderName member_name, MemberType ClassType::* member_ptr)
   {
     static_assert(!build_internal::IsDynArray<std::remove_cv_t<MemberType>>::value, "DynArray must specify the member used for the element count.");
 
-    using RawMemberType = emit_internal::StripType<MemberType>;
-
     build_internal::MemberBuilder& member_builder = AddMember_Internal(member_name, static_cast<SizeType>(emit_internal::offset_of(member_ptr)));
 
-    Emit_MemberBuilder<RawMemberType>::Emit(*this, member_builder);
+    Emit_MemberBuilder<emit_internal::StripType<MemberType>>::Emit(*this, member_builder);
   }
 
-  template<typename ClassType, typename T>
-  void BuildCtx::AddMember(const BuilderName member_name, DynArray<T> ClassType::* member_ptr, const HashStr32 length_name) const
+  // NOTE(SR): If the length field is deserialized make sure it comes before this member.
+  template<typename ClassType, typename T, typename LengthType>
+  void Builder::AddMember(const BuilderName member_name, DynArray<T> ClassType::* member_ptr, LengthType ClassType::* length_ptr)
   {
-    using RawMemberType = emit_internal::StripType<T>;
-
     build_internal::MemberBuilder& member_builder = AddMember_Internal(member_name, static_cast<SizeType>(emit_internal::offset_of(member_ptr)));
 
-    AddQualifier(member_builder, TypeConstructorFlags::DynamicArray, length_name.hash);
-    Emit_MemberBuilder<RawMemberType>::Emit(*this, member_builder);
+    const DynamicSize dynamic_size = MakeDynamicSize<LengthType>(static_cast<std::uint32_t>(emit_internal::offset_of(member_ptr)));
+
+    AddQualifier_Internal(member_builder, TypeConstructorFlags::DynamicArray, static_cast<std::uint32_t>(dynamic_size));
+    Emit_MemberBuilder<emit_internal::StripType<T>>::Emit(*this, member_builder);
   }
 
   template<typename T>
@@ -460,7 +491,7 @@ namespace BinarySchema
   inline constexpr BinarySchema::TypeInfo BinarySchema::Type<T> = {#T, BinarySchema::SchemaTypeFlags::flags}; \
                                                                                                               \
   template<>                                                                                                  \
-  inline void BinarySchema::DeclareMembers<T>(const BinarySchema::BuildCtx& ctx)
+  inline void BinarySchema::DeclareMembers<T>(BinarySchema::Builder & ctx)
 
 BinarySchema_Type(bool, IsTrivial) {}
 BinarySchema_Type(char, IntegerFlags) {}

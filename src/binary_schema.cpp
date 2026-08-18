@@ -17,21 +17,11 @@
 
 #include "binaryio/binary_stream.hpp"  // binaryIOAssert, IByteWriter, IByteReader, IOErrorCode
 
-#include "memory/smart_pointer.hpp"  // bfMemMakeShared
-
 #include <algorithm>  // equal
 #include <cstring>    // memcmp, memcpy
 
 #if BINARY_SCHEMA_BUILD_VALIDATION
 #include <cstdio>  // printf
-#endif
-
-#if defined(__GNUC__) || defined(__clang__) || defined(__INTEL_LLVM_COMPILER) || defined(__INTEL_COMPILER)
-#define unreachable() __builtin_unreachable()
-#elif defined(_MSC_VER)
-#define unreachable() __assume(0)
-#else
-#define unreachable() return binaryIO::IOErrorCode::UnknownError;
 #endif
 
 namespace BinarySchema
@@ -63,6 +53,28 @@ namespace BinarySchema
     return !(flags & TypeConstructorFlags::FixedSize) && !ByteCodeHasSmallSize(flags);
   }
 
+  static inline std::uint32_t DynamicSize_GetOffset(const DynamicSize dynamic_size)
+  {
+    return (std::uint32_t(dynamic_size) >> std::uint32_t(DynamicSize::OffsetShift));
+  }
+
+  static inline std::uint32_t DynamicSize_GetSize(const DynamicSize dynamic_size)
+  {
+    switch (DynamicSize(std::uint32_t(dynamic_size) & std::uint32_t(DynamicSize::SizeClassMask)))
+    {
+      case DynamicSize::Int8:  return sizeof(std::uint8_t);
+      case DynamicSize::Int16: return sizeof(std::uint16_t);
+      case DynamicSize::Int32: return sizeof(std::uint32_t);
+      case DynamicSize::Int64: return sizeof(std::uint64_t);
+      default:                 return 0;
+    }
+  }
+
+  static inline bool DynamicSize_IsSigned(const DynamicSize dynamic_size)
+  {
+    return (std::uint32_t(dynamic_size) & std::uint32_t(DynamicSize::Signed)) != 0x0;
+  }
+
 #if BINARY_SCHEMA_BUILD_VALIDATION
 #define BINARY_SCHEMA_VERIFY_PRINT(expr, ...) BINARY_SCHEMA_VERIFY_PRINT_((expr), #expr)
 
@@ -91,7 +103,7 @@ namespace BinarySchema
 
       if (ByteCodeIsDynamicallySized(src_flags) && ByteCodeIsDynamicallySized(dst_flags))
       {
-        HashStr32 src_hash_str, dst_hash_str;
+        DynamicSize src_hash_str, dst_hash_str;
         std::memcpy(&src_hash_str, src + src_byte_code_index, sizeof(src_hash_str));
         std::memcpy(&dst_hash_str, dst + dst_byte_code_index, sizeof(dst_hash_str));
 
@@ -169,24 +181,15 @@ namespace BinarySchema
           return false;
         }
 
-        // Validate dynamic array qualifiers.
         if (ByteCodeIsDynamicallySized(flags))
         {
-          HashStr32 member_hash_str;
-          std::memcpy(&member_hash_str, byte_code_ptr, sizeof(member_hash_str));
+          DynamicSize dynamic_size;
+          std::memcpy(&dynamic_size, byte_code_ptr, sizeof(dynamic_size));
 
-          const StructureMember* const dynamic_val = type.FindMember(member_hash_str);
-          binaryIOAssert(dynamic_val, "Failed to find dynamic member.");
+          const std::uint32_t offset = DynamicSize_GetOffset(dynamic_size);
 
-          if (BINARY_SCHEMA_VERIFY_PRINT(!dynamic_val->base_type))
+          if (BINARY_SCHEMA_VERIFY_PRINT(offset >= type.m_Size))
           {
-            return false;
-          }
-
-          if (BINARY_SCHEMA_VERIFY_PRINT(!dynamic_val || !dynamic_val->base_type->IsIntScalar() || dynamic_val->HasQualifiers()))
-          {
-            binaryIOAssert(dynamic_val->base_type->IsIntScalar() && !dynamic_val->HasQualifiers(), "Dynamic member must be an unqualified integer type.");
-
             return false;
           }
         }
@@ -310,7 +313,7 @@ namespace BinarySchema
   {
     TypeConstructorFlags flags;
     ArrayCountType       num_elements;
-    HashStr32            dyn_member;  // Only valid if: ByteCodeIsDynamicallySized(flags)
+    DynamicSize          dyn_size;  // Only valid if: ByteCodeIsDynamicallySized(flags)
   };
 
   namespace ByteCodeInternal
@@ -326,26 +329,27 @@ namespace BinarySchema
         return result;
       }
 
-      static ArrayCountType GetDynamicArrayCount(const StructureMember& dyn_count_member, const void* const parent_object)
+      static ArrayCountType GetDynamicArrayCount(const DynamicSize dynamic_size, const void* const parent_object)
       {
-        const SchemaType& array_count_type = *dyn_count_member.base_type;
-
-#if BINARY_SCHEMA_RUNTIME_VALIDATION
-        binaryIOAssert(array_count_type.IsIntScalar() && !dyn_count_member.HasQualifiers(), "Dynamic array size type must be an unqualified integer type.");
-#endif
-
-        const void* const num_elements_data = dyn_count_member.GetMemberData(parent_object);
+        const std::uint32_t byte_offset       = DynamicSize_GetOffset(dynamic_size);
+        const std::uint32_t integer_size      = DynamicSize_GetSize(dynamic_size);
+        const void* const   num_elements_data = reinterpret_cast<const byte*>(parent_object) + byte_offset;
 
         std::uint64_t num_elements = 0x0;
+        std::memcpy(&num_elements, num_elements_data, integer_size);
 
-        binaryIOAssert(array_count_type.m_Size <= sizeof(num_elements), "Integer type too big.");
-        std::memcpy(&num_elements, num_elements_data, array_count_type.m_Size);
+        if (DynamicSize_IsSigned(dynamic_size))
+        {
+          if ((num_elements >> ((CHAR_BIT * integer_size) - 1)) != 0)  // Clamp negative numbers to zero.
+          {
+            return 0;
+          }
+        }
 
         return ArrayCountType(num_elements);
       }
     }  // namespace detail
 
-    template<bool dynamicMemberCanBeNull>
     static TypeConstructorByteCodeResult ReadTypeCtorBytecode(const TypeByteCode*& type_bytecode, const SchemaType& parent_type, const void* const parent_object)
     {
       TypeConstructorByteCodeResult result = {};
@@ -362,42 +366,21 @@ namespace BinarySchema
       }
       else
       {
-        result.dyn_member = detail::ReadTypeCtorBytecodeRaw<HashStr32>(type_bytecode);
-
-        const StructureMember* const member = parent_type.FindMember(result.dyn_member);
-
-        if constexpr (dynamicMemberCanBeNull)
-        {
-          // Member can be null when converting from a fixed array to a dynamic array.
-          // The int-max(ArrayCountType(-1)) will be clamped by the source data's array count.
-          result.num_elements = member ? detail::GetDynamicArrayCount(*member, parent_object) : ArrayCountType(-1);
-        }
-        else
-        {
-#if BINARY_SCHEMA_RUNTIME_VALIDATION
-          binaryIOAssert(member != nullptr, "Invalid type byte code dynamic size value.");
-#endif
-          result.num_elements = detail::GetDynamicArrayCount(*member, parent_object);
-        }
+        result.dyn_size     = detail::ReadTypeCtorBytecodeRaw<DynamicSize>(type_bytecode);
+        result.num_elements = detail::GetDynamicArrayCount(result.dyn_size, parent_object);
       }
 
       return result;
     }
 
-    template<bool dynamicMemberCanBeNull>
-    static SizeType GetTypeSize(
-     const SchemaType&         parent_type,
-     const void* const         parent_object,
-     const SchemaType&         base_type,
-     const TypeByteCode*       type_bytecode,
-     const TypeByteCode* const type_bytecode_end)
+    static SizeType GetTypeSize(const SchemaType& parent_type, const void* const parent_object, const SchemaType& base_type, const TypeByteCode* type_bytecode, const TypeByteCode* const type_bytecode_end)
     {
       if (type_bytecode != type_bytecode_end)
       {
-        const TypeConstructorByteCodeResult byte_code = ReadTypeCtorBytecode<dynamicMemberCanBeNull>(type_bytecode, parent_type, parent_object);
+        const TypeConstructorByteCodeResult byte_code = ReadTypeCtorBytecode(type_bytecode, parent_type, parent_object);
         const SizeType                      base_size = (byte_code.flags & TypeConstructorFlags::HeapAllocated) ?
                                                          sizeof(void*) :
-                                                         GetTypeSize<false>(parent_type, parent_object, base_type, type_bytecode, type_bytecode_end);
+                                                         GetTypeSize(parent_type, parent_object, base_type, type_bytecode, type_bytecode_end);
 
         return byte_code.num_elements * base_size;
       }
@@ -423,7 +406,7 @@ namespace BinarySchema
     {
       if (type_bytecode != type_bytecode_end)
       {
-        const TypeConstructorByteCodeResult byte_code = ByteCodeInternal::ReadTypeCtorBytecode<false>(type_bytecode, parent_type, parent_object);
+        const TypeConstructorByteCodeResult byte_code = ByteCodeInternal::ReadTypeCtorBytecode(type_bytecode, parent_type, parent_object);
 
         const void* data_location = data;
 
@@ -437,7 +420,7 @@ namespace BinarySchema
 
         if (data_location != nullptr)
         {
-          const SizeType stride = ByteCodeInternal::GetTypeSize<false>(parent_type, parent_object, base_type, type_bytecode, type_bytecode_end);
+          const SizeType stride = ByteCodeInternal::GetTypeSize(parent_type, parent_object, base_type, type_bytecode, type_bytecode_end);
 
           for (ArrayCountType i = 0u; i < byte_code.num_elements; ++i)
           {
@@ -488,9 +471,9 @@ namespace BinarySchema
     {
       if (type_bytecode != type_bytecode_end)
       {
-        const TypeConstructorByteCodeResult byte_code    = ByteCodeInternal::ReadTypeCtorBytecode<false>(type_bytecode, parent_type, parent_object);
+        const TypeConstructorByteCodeResult byte_code    = ByteCodeInternal::ReadTypeCtorBytecode(type_bytecode, parent_type, parent_object);
         const ArrayCountType                num_elements = byte_code.num_elements;
-        const SizeType                      stride       = ByteCodeInternal::GetTypeSize<false>(parent_type, parent_object, base_type, type_bytecode, type_bytecode_end);
+        const SizeType                      stride       = ByteCodeInternal::GetTypeSize(parent_type, parent_object, base_type, type_bytecode, type_bytecode_end);
 
         void* write_location = data;
 
@@ -536,15 +519,7 @@ namespace BinarySchema
       {
         for (const BinarySchema::StructureMember& member : type.m_Members)
         {
-          ReadQualifiedType(
-           stream,
-           memory,
-           type,
-           data,
-           member.GetMemberData(data),
-           *member.base_type,
-           member.type_ctors.begin(),
-           member.type_ctors.end());
+          ReadQualifiedType(stream, memory, type, data, member.GetMemberData(data), *member.base_type, member.type_ctors.begin(), member.type_ctors.end());
         }
       }
 
@@ -575,34 +550,24 @@ namespace BinarySchema
     {
       if (type_bytecode != type_bytecode_end)
       {
-        const TypeConstructorByteCodeResult src_byte_code     = ByteCodeInternal::ReadTypeCtorBytecode<false>(type_bytecode, src_parent_type, src_parent_object);
-        const TypeConstructorByteCodeResult dst_byte_code     = ByteCodeInternal::ReadTypeCtorBytecode<true>(dst_type_bytecode, src_parent_type, src_parent_object);
+        const TypeConstructorByteCodeResult src_byte_code     = ByteCodeInternal::ReadTypeCtorBytecode(type_bytecode, src_parent_type, src_parent_object);
+        const TypeConstructorByteCodeResult dst_byte_code     = ByteCodeInternal::ReadTypeCtorBytecode(dst_type_bytecode, src_parent_type, src_parent_object);
         const TypeConstructorFlags          src_type_flags    = src_byte_code.flags;
         const TypeConstructorFlags          dst_type_flags    = dst_byte_code.flags;
         const ArrayCountType                num_data_elements = std::min(src_byte_code.num_elements, dst_byte_code.num_elements);
-        const SizeType                      src_stride        = ByteCodeInternal::GetTypeSize<false>(src_parent_type, src_parent_object, src_type, type_bytecode, type_bytecode_end);
-        const SizeType                      dst_stride        = ByteCodeInternal::GetTypeSize<true>(src_parent_type, src_parent_object, dst_type, type_bytecode, type_bytecode_end);
+        const SizeType                      src_stride        = ByteCodeInternal::GetTypeSize(src_parent_type, src_parent_object, src_type, type_bytecode, type_bytecode_end);
+        const SizeType                      dst_stride        = ByteCodeInternal::GetTypeSize(src_parent_type, src_parent_object, dst_type, type_bytecode, type_bytecode_end);
 
         // Patchwork if converting from a fixed size to a dynamic size.
         // Writes the number of elements to the dynamic member field.
         if (!ByteCodeIsDynamicallySized(src_type_flags) && ByteCodeIsDynamicallySized(dst_type_flags))
         {
-#if BINARY_SCHEMA_RUNTIME_VALIDATION
-          binaryIOAssert(!src_parent_type.FindMember(dst_byte_code.dyn_member), "This field should not be in source schema, it would get overridden to a potentially incorrect value.");
-#endif
+          const std::uint32_t dynamic_size_offset = DynamicSize_GetOffset(dst_byte_code.dyn_size);
+          const std::uint32_t dynamic_size_class  = DynamicSize_GetSize(dst_byte_code.dyn_size);
+          void* const         num_elements_data   = reinterpret_cast<byte*>(dst_parent_object) + dynamic_size_offset;
 
-          const StructureMember* const dst_dyn_member = dst_parent_type.FindMember(dst_byte_code.dyn_member);
-
-#if BINARY_SCHEMA_RUNTIME_VALIDATION
-          binaryIOAssert(dst_dyn_member, "Failed to find dynamic member.");
-          binaryIOAssert(dst_dyn_member->base_type->IsIntScalar() && !dst_dyn_member->HasQualifiers(), "Dynamic member must be an unqualified integer type.");
-#endif
-
-          void* const    num_elements_data = dst_dyn_member->GetMemberData(dst_parent_object);
-          const SizeType num_elements_size = dst_dyn_member->base_type->m_Size;
-
-          std::memset(num_elements_data, 0x0, num_elements_size);
-          std::memcpy(num_elements_data, &num_data_elements, std::min(num_elements_size, SizeType(sizeof(num_data_elements))));
+          std::memset(num_elements_data, 0x0, dynamic_size_class);
+          std::memcpy(num_elements_data, &num_data_elements, std::min(dynamic_size_class, std::uint32_t(sizeof(num_data_elements))));
         }
 
         const void* read_location  = src_object;
@@ -704,13 +669,13 @@ namespace BinarySchema
     {
       if (type_bytecode != type_bytecode_end)
       {
-        const TypeConstructorByteCodeResult byte_code         = ByteCodeInternal::ReadTypeCtorBytecode<false>(type_bytecode, parent_type, parent_object);
+        const TypeConstructorByteCodeResult byte_code         = ByteCodeInternal::ReadTypeCtorBytecode(type_bytecode, parent_type, parent_object);
         const bool                          is_heap_allocated = byte_code.flags & TypeConstructorFlags::HeapAllocated;
         void* const                         data_location     = is_heap_allocated ? *static_cast<void* const*>(data) : data;
 
         if (data_location)
         {
-          const SizeType       stride       = ByteCodeInternal::GetTypeSize<false>(parent_type, parent_object, base_type, type_bytecode, type_bytecode_end);
+          const SizeType       stride       = ByteCodeInternal::GetTypeSize(parent_type, parent_object, base_type, type_bytecode, type_bytecode_end);
           const ArrayCountType num_elements = byte_code.num_elements;
 
           for (ArrayCountType i = 0u; i < num_elements; ++i)
@@ -742,8 +707,6 @@ namespace BinarySchema
   }  // namespace FreeInternal
 
 }  // namespace BinarySchema
-
-#undef unreachable
 
 #pragma region Builder API
 
@@ -857,7 +820,7 @@ namespace
         {
           return std::nullopt;
         }
-        else if (slot->name.hash_str == hash)
+        else if (slot->name.hash_str.hash == hash.hash)
         {
           return index;
         }
@@ -1032,7 +995,7 @@ namespace
 
 }
 
-void BinarySchema::BuildCtx::AddQualifier(build_internal::MemberBuilder& member, TypeConstructorFlags flags_part, std::uint32_t size_part) const
+void BinarySchema::Builder::AddQualifier_Internal(build_internal::MemberBuilder& member, TypeConstructorFlags flags_part, std::uint32_t size_part)
 {
   if (flags_part == TypeConstructorFlags::DynamicArray)
   {
@@ -1057,7 +1020,7 @@ void BinarySchema::BuildCtx::AddQualifier(build_internal::MemberBuilder& member,
 
   const TypeConstructorFlags encoded_flags = ByteCodeEncodeFlags(flags_part, size_part);
 
-  *type_lst::EmplaceBack(builder->allocator, &builder->qualifier_list) = static_cast<TypeByteCode>(encoded_flags);
+  *type_lst::EmplaceBack(allocator, &qualifier_list) = static_cast<TypeByteCode>(encoded_flags);
   if (!ByteCodeHasSmallSize(encoded_flags))
   {
     TypeByteCode size_bytes[sizeof(size_part)];
@@ -1065,36 +1028,28 @@ void BinarySchema::BuildCtx::AddQualifier(build_internal::MemberBuilder& member,
 
     for (const TypeByteCode size_byte : size_bytes)
     {
-      *type_lst::EmplaceBack(builder->allocator, &builder->qualifier_list) = size_byte;
+      *type_lst::EmplaceBack(allocator, &qualifier_list) = size_byte;
     }
   }
 
-  member.qualifier_count = std::uint32_t(builder->qualifier_list.size - member.qualifier_offset);
+  member.qualifier_count = std::uint32_t(qualifier_list.size - member.qualifier_offset);
 }
 
-void BinarySchema::BuildCtx::SetBaseType(build_internal::MemberBuilder& member, const build_internal::TypeBuilder* const type)
+void BinarySchema::Builder::SetBaseType(build_internal::MemberBuilder& member, const build_internal::TypeBuilder* const type)
 {
   member.base_type_name = type->name.hash_str;
 }
 
-BinarySchema::build_internal::MemberBuilder& BinarySchema::BuildCtx::AddMember_Internal(const BuilderName name, const SizeType byte_offset) const
+BinarySchema::build_internal::MemberBuilder& BinarySchema::Builder::AddMember_Internal(const BuilderName name, const SizeType byte_offset)
 {
-#if 0
-#if BINARY_SCHEMA_BUILD_VALIDATION
-  type_lst::ForEach(type->members, [&name](const std::size_t /* index */, const build_internal::MemberBuilder& member) -> void {
-    binaryIOAssert(member.name != name, "Member with this name already exists.");
-  });
-#endif
-#endif
-
-  build_internal::MemberBuilder* const new_member = type_lst::EmplaceBack(builder->allocator, &builder->member_list);
+  build_internal::MemberBuilder* const new_member = type_lst::EmplaceBack(allocator, &member_list);
 
   new_member->name             = name;
   new_member->offset           = byte_offset;
   new_member->base_type_name   = "";
-  new_member->qualifier_offset = std::uint32_t(builder->qualifier_list.size);
+  new_member->qualifier_offset = std::uint32_t(qualifier_list.size);
   new_member->qualifier_count  = 0;
-  ++type->member_count;
+  ++current_type->member_count;
 
   return *new_member;
 }
@@ -1104,7 +1059,8 @@ BinarySchema::Builder::Builder(const AllocatorView allocator) :
   type_table{},
   type_list{},
   member_list{},
-  qualifier_list{}
+  qualifier_list{},
+  current_type{nullptr}
 {
 }
 
@@ -1270,7 +1226,7 @@ BinarySchema::Schema BinarySchema::Builder::BuildSchema(IPolymorphicAllocator& a
   return Schema{};
 }
 
-BinarySchema::build_internal::TypeBuilder* BinarySchema::Builder::AddType_Internal(const BuilderName name, const SchemaTypeFlags flags, const std::size_t size, const std::size_t alignment, void (*Builder)(const BuildCtx& ctx))
+BinarySchema::build_internal::TypeBuilder* BinarySchema::Builder::AddType_Internal(const BuilderName name, const SchemaTypeFlags flags, const std::size_t size, const std::size_t alignment, void (*Builder)(Builder& ctx))
 {
   BinarySchema::build_internal::TypeBuilder** existing_type = type_tbl::Upsert(&type_table, allocator, name.hash_str);
 
@@ -1287,9 +1243,11 @@ BinarySchema::build_internal::TypeBuilder* BinarySchema::Builder::AddType_Intern
 
     *existing_type = new_type;
 
-    const BuildCtx ctx{this, new_type};
-
-    Builder(ctx);
+    BinarySchema::build_internal::TypeBuilder* const prev_type = std::exchange(current_type, new_type);
+    {
+      Builder(*this);
+    }
+    current_type = prev_type;
   }
 
   return *existing_type;
