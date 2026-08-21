@@ -438,11 +438,36 @@ namespace BinarySchema
       return stream->error_state;
     }
 
+    template<typename T>
+    static void WriteLE(binaryIO::IOStream* const stream, const void* const data)
+    {
+      static_assert(std::is_integral_v<T>, "Expected to be an integer type.");
+
+      binaryIO::writeLE(stream, *static_cast<const T*>(data));
+    }
+
     static binaryIO::IOErrorCode WriteUnqualifiedType(binaryIO::IOStream* const stream, const void* const data, const SchemaType& type)
     {
-      if (type.IsTrivial())
+      if (type.IsScalar())
       {
-        IOStream_Write(stream, data, type.m_Size);
+        switch (type.m_Size)
+        {
+          case sizeof(std::uint8_t):
+            WriteLE<std::uint8_t>(stream, data);
+            break;
+          case sizeof(std::uint16_t):
+            WriteLE<std::uint16_t>(stream, data);
+            break;
+          case sizeof(std::uint32_t):
+            WriteLE<std::uint32_t>(stream, data);
+            break;
+          case sizeof(std::uint64_t):
+            WriteLE<std::uint64_t>(stream, data);
+            break;
+          default:
+            IOStream_Write(stream, data, type.m_Size);
+            break;
+        }
       }
       else
       {
@@ -509,11 +534,36 @@ namespace BinarySchema
       return stream->error_state;
     }
 
+    template<typename T>
+    static void ReadLE(binaryIO::IOStream* const stream, void* const data)
+    {
+      static_assert(std::is_integral_v<T>, "Expected to be an integer type.");
+
+      binaryIO::readLE(stream, static_cast<T*>(data));
+    }
+
     static binaryIO::IOErrorCode ReadUnqualifiedType(binaryIO::IOStream* const stream, IPolymorphicAllocator& memory, void* const data, const SchemaType& type)
     {
-      if (type.IsTrivial())
+      if (type.IsScalar())
       {
-        IOStream_Read(stream, data, type.m_Size);
+        switch (type.m_Size)
+        {
+          case sizeof(std::uint8_t):
+            ReadLE<std::uint8_t>(stream, data);
+            break;
+          case sizeof(std::uint16_t):
+            ReadLE<std::uint16_t>(stream, data);
+            break;
+          case sizeof(std::uint32_t):
+            ReadLE<std::uint32_t>(stream, data);
+            break;
+          case sizeof(std::uint64_t):
+            ReadLE<std::uint64_t>(stream, data);
+            break;
+          default:
+            IOStream_Read(stream, data, type.m_Size);
+            break;
+        }
       }
       else
       {
@@ -533,7 +583,7 @@ namespace BinarySchema
                                        const void* const      src_data,
                                        void* const            dst_data,
                                        const SchemaType&      src_type,
-                                       const SchemaType&      dst_type);
+                                       const SchemaType&      dst_type) noexcept;
 
     static void ConvertQualifiedType(const SchemaType&         src_parent_type,
                                      const void* const         src_parent_object,
@@ -546,7 +596,7 @@ namespace BinarySchema
                                      IPolymorphicAllocator&    dst_memory,
                                      const TypeByteCode*       type_bytecode,
                                      const TypeByteCode* const type_bytecode_end,
-                                     const TypeByteCode*       dst_type_bytecode)
+                                     const TypeByteCode*       dst_type_bytecode) noexcept
     {
       if (type_bytecode != type_bytecode_end)
       {
@@ -617,37 +667,111 @@ namespace BinarySchema
       }
     }
 
+    template<typename...>
+    struct TypeList
+    {
+    };
+
+    using ScalarTypeList = TypeList<bool, char, std::uint8_t, std::uint16_t, std::uint32_t, std::uint64_t, std::int8_t, std::int16_t, std::int32_t, std::int64_t, float, double>;
+
+    template<typename T>
+    static bool IsType(const SchemaType& type) noexcept
+    {
+      return type.m_Name.hash == TypeName<T>.hash_str.hash;
+    }
+
+    template<typename SrcType, typename T>
+    static bool TryConvert_Dst(const void* const src_data, void* const dst_data, const SchemaType& dst_type) noexcept
+    {
+      const bool name_matches = IsType<T>(dst_type);
+
+      if (name_matches)
+      {
+        *static_cast<T*>(dst_data) = static_cast<T>(*static_cast<const SrcType*>(src_data));
+      }
+
+      return name_matches;
+    }
+
+    template<typename SrcType, typename... Ts>
+    static bool TryConvert_DstEntry(const void* const src_data, void* const dst_data, const SchemaType& dst_type, TypeList<Ts...>) noexcept
+    {
+      return (TryConvert_Dst<SrcType, Ts>(src_data, dst_data, dst_type) || ...);
+    }
+
+    template<typename T>
+    static bool TryConvert_Src(const void* const src_data, void* const dst_data, const SchemaType& src_type, const SchemaType& dst_type) noexcept
+    {
+      return IsType<T>(src_type) && TryConvert_DstEntry<T>(src_data, dst_data, dst_type, ScalarTypeList{});
+    }
+
+    template<typename... Ts>
+    static bool TryConvert_SrcEntry(const void* const src_data, void* const dst_data, const SchemaType& src_type, const SchemaType& dst_type, TypeList<Ts...>) noexcept
+    {
+      return (TryConvert_Src<Ts>(src_data, dst_data, src_type, dst_type) || ...);
+    }
+
+    static bool TryConvert(const void* const src_data, void* const dst_data, const SchemaType& src_type, const SchemaType& dst_type) noexcept
+    {
+      return TryConvert_SrcEntry(src_data, dst_data, src_type, dst_type, ScalarTypeList{});
+    }
+
     static void ConvertUnqualifiedType(IPolymorphicAllocator& dst_memory,
                                        const void* const      src_data,
                                        void* const            dst_data,
                                        const SchemaType&      src_type,
-                                       const SchemaType&      dst_type)
+                                       const SchemaType&      dst_type) noexcept
     {
-      if (src_type.IsTrivial() && src_type == dst_type)
+      const auto ConvertMember = [&](const BinarySchema::StructureMember& dst_member, const BinarySchema::StructureMember& src_member) -> void {
+        ConvertQualifiedType(src_type,
+                             src_data,
+                             *src_member.base_type,
+                             src_member.GetMemberData(src_data),
+                             dst_type,
+                             dst_data,
+                             *dst_member.base_type,
+                             dst_member.GetMemberData(dst_data),
+                             dst_memory,
+                             src_member.type_ctors.begin(),
+                             src_member.type_ctors.end(),
+                             dst_member.type_ctors.begin());
+      };
+
+      const bool is_same_type = src_type == dst_type;
+
+      if (is_same_type)
       {
-        std::memcpy(dst_data, src_data, src_type.m_Size);
+        if (src_type.IsScalar())
+        {
+          std::memcpy(dst_data, src_data, src_type.m_Size);
+        }
+        else
+        {
+          for (std::size_t member_index = 0, member_count = dst_type.m_Members.num_elements; member_index < member_count; ++member_index)
+          {
+            ConvertMember(dst_type.m_Members[member_index], src_type.m_Members[member_index]);
+          }
+        }
       }
       else
       {
-        for (const BinarySchema::StructureMember& dst_member : dst_type.m_Members)
+        if (src_type.IsScalar() && dst_type.IsScalar())
         {
-          const StructureMember* const src_member = src_type.FindMember(dst_member.name.hash);
-
-          if (src_member && src_member->IsConvertCompatibleWith(dst_member))
+          if (!TryConvert(src_data, dst_data, src_type, dst_type))
           {
-            ConvertQualifiedType(
-             src_type,
-             src_data,
-             *src_member->base_type,
-             src_member->GetMemberData(src_data),
-             dst_type,
-             dst_data,
-             *dst_member.base_type,
-             dst_member.GetMemberData(dst_data),
-             dst_memory,
-             src_member->type_ctors.begin(),
-             src_member->type_ctors.end(),
-             dst_member.type_ctors.begin());
+            // TODO(SR): Error??
+          }
+        }
+        else
+        {
+          for (const BinarySchema::StructureMember& dst_member : dst_type.m_Members)
+          {
+            const StructureMember* const src_member = src_type.FindMember(dst_member.name.hash);
+
+            if (src_member && src_member->IsConvertCompatibleWith(dst_member))
+            {
+              ConvertMember(dst_member, *src_member);
+            }
           }
         }
       }

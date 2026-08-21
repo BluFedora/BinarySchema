@@ -137,12 +137,11 @@ namespace BinarySchema
 
   enum class SchemaTypeFlags : std::uint16_t
   {
-    None      = 0x0,
-    IsTrivial = (1 << 0),  //!< The type will be bulk copied, rather than (de)serialized member by member.
-    IsScalar  = (1 << 1),  //!< The type is numeric.
+    None     = 0x0,
+    IsScalar = (1 << 0),  //!< The type is numeric.
 
-    IntegerFlags       = IsTrivial | IsScalar,
-    FloatingPointFlags = IsTrivial | IsScalar,
+    IntegerFlags       = IsScalar,
+    FloatingPointFlags = IsScalar,
   };
   inline std::uint32_t operator&(const SchemaTypeFlags lhs, const SchemaTypeFlags rhs)
   {
@@ -157,7 +156,7 @@ namespace BinarySchema
     SizeType                               m_Size;
     binaryIO::rel_array32<StructureMember> m_Members;
 
-    bool                   IsTrivial() const { return m_Flags & SchemaTypeFlags::IsTrivial; }
+    bool                   IsScalar() const { return m_Flags & SchemaTypeFlags::IsScalar; }
     const StructureMember* FindMember(const HashStr32 name) const;
   };
   static_assert(sizeof(SchemaType) == 24u, "");
@@ -437,14 +436,8 @@ namespace BinarySchema
     }
   };
 
-  struct TypeInfo
-  {
-    BuilderName     name;
-    SchemaTypeFlags flags;
-  };
-
   template<typename T>
-  inline constexpr TypeInfo Type;  // = undefined;
+  inline constexpr BuilderName TypeName;  // = undefined;
 
   template<typename T>
   void DeclareMembers(Builder& ctx);  // = undefined;
@@ -452,9 +445,7 @@ namespace BinarySchema
   template<typename T>
   build_internal::TypeBuilder* Builder::AddType()
   {
-    constexpr TypeInfo type_info = Type<T>;
-
-    return AddType_Internal(type_info.name, type_info.flags, sizeof(T), alignof(T), &DeclareMembers<T>);
+    return AddType_Internal(TypeName<T>, (std::is_arithmetic_v<T> ? SchemaTypeFlags::IsScalar : SchemaTypeFlags::None), sizeof(T), alignof(T), &DeclareMembers<T>);
   }
 
   template<typename ClassType, typename MemberType>
@@ -482,29 +473,29 @@ namespace BinarySchema
   template<typename T>
   const SchemaType* Schema::FindType() const
   {
-    return FindType(BinarySchema::Type<T>.name.hash_str);
+    return FindType(BinarySchema::TypeName<T>.hash_str);
   }
 }
 
-#define BinarySchema_Type(T, flags)                                                                           \
-  template<>                                                                                                  \
-  inline constexpr BinarySchema::TypeInfo BinarySchema::Type<T> = {#T, BinarySchema::SchemaTypeFlags::flags}; \
-                                                                                                              \
-  template<>                                                                                                  \
+#define BinarySchema_Type(T)                                                   \
+  template<>                                                                   \
+  inline constexpr BinarySchema::BuilderName BinarySchema::TypeName<T> = {#T}; \
+                                                                               \
+  template<>                                                                   \
   inline void BinarySchema::DeclareMembers<T>(BinarySchema::Builder & ctx)
 
-BinarySchema_Type(bool, IsTrivial) {}
-BinarySchema_Type(char, IntegerFlags) {}
-BinarySchema_Type(std::uint8_t, IntegerFlags) {}
-BinarySchema_Type(std::uint16_t, IntegerFlags) {}
-BinarySchema_Type(std::uint32_t, IntegerFlags) {}
-BinarySchema_Type(std::uint64_t, IntegerFlags) {}
-BinarySchema_Type(std::int8_t, IntegerFlags) {}
-BinarySchema_Type(std::int16_t, IntegerFlags) {}
-BinarySchema_Type(std::int32_t, IntegerFlags) {}
-BinarySchema_Type(std::int64_t, IntegerFlags) {}
-BinarySchema_Type(float, FloatingPointFlags) {}
-BinarySchema_Type(double, FloatingPointFlags) {}
+BinarySchema_Type(bool) {}
+BinarySchema_Type(char) {}
+BinarySchema_Type(std::uint8_t) {}
+BinarySchema_Type(std::uint16_t) {}
+BinarySchema_Type(std::uint32_t) {}
+BinarySchema_Type(std::uint64_t) {}
+BinarySchema_Type(std::int8_t) {}
+BinarySchema_Type(std::int16_t) {}
+BinarySchema_Type(std::int32_t) {}
+BinarySchema_Type(std::int64_t) {}
+BinarySchema_Type(float) {}
+BinarySchema_Type(double) {}
 
 #endif /* BINARY_SCHEMA_HPP */
 
