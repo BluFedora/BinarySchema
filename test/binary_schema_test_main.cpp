@@ -22,56 +22,50 @@ struct TrivialType
   float y;
   float z;
 };
-constexpr auto TrivialType_Register = BinarySchema_RegisterTrivialType(
- TrivialType,
- {
-   BinarySchema_Member(x, "f32");
-   BinarySchema_Member(y, "f32");
-   BinarySchema_Member(z, "f32");
- });
+BinarySchema_Type(TrivialType)
+{
+  ctx.AddMember("x", &TrivialType::x);
+  ctx.AddMember("y", &TrivialType::y);
+  ctx.AddMember("z", &TrivialType::z);
+};
 
 struct ComplexTypeV1
 {
-  TrivialType* ptr;
-  TrivialType  fixed_array[2];
-  TrivialType* dynamic_array;
-  int          dynamic_array_size;
-  TrivialType* heap_array;  // Always size of 4.
+  TrivialType*                             ptr;
+  TrivialType                              fixed_array[2];
+  int                                      dynamic_array_size;
+  BinarySchema::DynArray<TrivialType>      dynamic_array;
+  BinarySchema::FixedArray<TrivialType, 4> heap_array;
 };
-constexpr auto ComplexTypeV1_Register = BinarySchema_RegisterTypeEx(
- ComplexTypeV1,
- "ComplexType",
- BinarySchema::SchemaTypeFlags::None,
- {
-   BinarySchema_Member(ptr, "TrivialType").Pointer();
-   BinarySchema_Member(fixed_array, "TrivialType").Array(sizeof(ComplexTypeV1::fixed_array) / sizeof(TrivialType));
-   BinarySchema_Member(dynamic_array_size, "i32");
-   BinarySchema_Member(dynamic_array, "TrivialType").Array("dynamic_array_size");
-   BinarySchema_Member(heap_array, "TrivialType").FixedHeap(4);
- });
+BinarySchema_TypeAlias(ComplexTypeV1, ComplexType)
+{
+  ctx.AddMember("ptr", &ComplexTypeV1::ptr);
+  ctx.AddMember("fixed_array", &ComplexTypeV1::fixed_array);
+  ctx.AddMember("dynamic_array_size", &ComplexTypeV1::dynamic_array_size);
+  ctx.AddMember("dynamic_array", &ComplexTypeV1::dynamic_array, &ComplexTypeV1::dynamic_array_size);
+  ctx.AddMember("heap_array", &ComplexTypeV1::heap_array);
+};
 
 struct ComplexTypeV2
 {
-  TrivialType* ptr;
-  TrivialType* fixed_array;  // V2: `fixed_array` is now dynamic.
-  int          fixed_array_size;
-  TrivialType* dynamic_array;
-  int          dynamic_array_size;
-  TrivialType* heap_array;  // V2: Needed to make this larger, 8 in length.
-  float        new_member;  // V2: Added a new member.
+  TrivialType*                             ptr;
+  int                                      fixed_array_size;
+  BinarySchema::DynArray<TrivialType>      fixed_array;  // V2: `fixed_array` is now dynamic.
+  int                                      dynamic_array_size;
+  BinarySchema::DynArray<TrivialType>      dynamic_array;
+  BinarySchema::FixedArray<TrivialType, 8> heap_array;  // V2: Needed to make this larger, 8 in length.
+  float                                    new_member;  // V2: Added a new member.
 };
-constexpr auto ComplexTypeV2_Register = BinarySchema_RegisterTypeEx(
- ComplexTypeV2,
- "ComplexType",
- BinarySchema::SchemaTypeFlags::None,
- {
-   BinarySchema_Member(ptr, "TrivialType").Pointer();
-   BinarySchema_Member(fixed_array_size, "i32");
-   BinarySchema_Member(fixed_array, "TrivialType").Array("fixed_array_size");
-   BinarySchema_Member(dynamic_array_size, "i32");
-   BinarySchema_Member(dynamic_array, "TrivialType").Array("dynamic_array_size");
-   BinarySchema_Member(heap_array, "TrivialType").FixedHeap(8);
- });
+BinarySchema_TypeAlias(ComplexTypeV2, ComplexType)
+{
+  ctx.AddMember("ptr", &ComplexTypeV2::ptr);
+  ctx.AddMember("fixed_array_size", &ComplexTypeV2::fixed_array_size);
+  ctx.AddMember("fixed_array", &ComplexTypeV2::fixed_array, &ComplexTypeV2::fixed_array_size);
+  ctx.AddMember("dynamic_array_size", &ComplexTypeV2::dynamic_array_size);
+  ctx.AddMember("dynamic_array", &ComplexTypeV2::dynamic_array, &ComplexTypeV2::dynamic_array_size);
+  ctx.AddMember("heap_array", &ComplexTypeV2::heap_array);
+  ctx.AddMember("new_member", &ComplexTypeV2::new_member);
+};
 
 // Allocator
 
@@ -160,74 +154,54 @@ TEST_CASE("Endianness", "[core-functionality]")
 
 TEST_CASE("Schema Builder Basics", "[BinarySchema]")
 {
+  ByteCountingAllocator allocator{};
+
   SECTION("Empty Builder")
   {
-    BinarySchema::SchemaBuilder builder{};
+    BinarySchema::Builder builder{allocator};
   }
 
-  SECTION("Builder Begin / End")
+  SECTION("Empty Schema")
   {
-    ByteCountingAllocator allocator{};
-    {
-      BinarySchema::SchemaBuilder builder{};
-      builder.Begin(allocator);
-      builder.End();
-    }
-    REQUIRE(allocator.num_bytes_allocated == 0);
+    BinarySchema::Builder builder{allocator};
+
+    const BinarySchema::Schema schema = builder.BuildSchema(allocator);
+
+    (void)schema;
   }
 
-  SECTION("Builder Basic Types")
-  {
-    ByteCountingAllocator allocator{};
-    {
-      BinarySchema::SchemaBuilder builder{};
-      builder.Begin(allocator);
-      AddBasicScalarTypes(&builder);
-      builder.End();
-    }
-    REQUIRE(allocator.num_bytes_allocated == 0);
-  }
+  REQUIRE(allocator.num_bytes_allocated == 0);
 }
 
 TEST_CASE("Round Trip Serialization/Deserialization", "[BinarySchema]")
 {
-  constexpr BinarySchema::ByteOrder byte_order = BinarySchema::ByteOrder::LittleEndian;
-
   SECTION("Trivial Type")
   {
     ByteCountingAllocator allocator{};
     {
-      BinarySchema::SchemaBuilder builder{};
-      builder.Begin(allocator);
-      AddBasicScalarTypes(&builder);
-      TrivialType_Register(&builder);
-      const BinarySchema::SchemaBuilderEndToken end_token = builder.End();
-      const std::optional<BinarySchema::Schema> schema    = builder.Build(allocator, end_token);
+      BinarySchema::Builder builder{allocator};
 
-      REQUIRE(schema.has_value());
+      builder.AddType<TrivialType>();
 
-      if (schema)
-      {
-        std::vector<byte, Memory::StlAllocator<byte>> serialized_object{allocator};
-        binaryIO::IOStream                            byte_writer = binaryIO::IOStream_FromVector(&serialized_object);
+      const BinarySchema::Schema schema = builder.BuildSchema(allocator);
 
-        const TrivialType saved_data{1.0f, 2.0f, 3.0f};
+      REQUIRE(schema.types != nullptr);
 
-        binaryIO::IOErrorCode io_result = BinarySchema::Write(&byte_writer, *schema, "TrivialType", &saved_data, byte_order);
+      std::vector<byte, Memory::StlAllocator<byte>> serialized_object{allocator};
+      binaryIO::IOStream                            byte_writer = binaryIO::IOStream_FromVector(&serialized_object);
 
-        REQUIRE(io_result == binaryIO::IOErrorCode::Success);
+      const TrivialType saved_data{1.0f, 2.0f, 3.0f};
 
-        binaryIO::IOStream byte_reader = binaryIO::IOStream_FromROMemory(serialized_object.data(), serialized_object.size());
-        TrivialType        loaded_data;
+      REQUIRE(BinarySchema::SaveObject(&byte_writer, schema, saved_data));
 
-        io_result = BinarySchema::Read(&byte_reader, allocator, *schema, "TrivialType", &loaded_data, byte_order);
+      binaryIO::IOStream byte_reader = binaryIO::IOStream_FromROMemory(serialized_object.data(), serialized_object.size());
 
-        REQUIRE(io_result == binaryIO::IOErrorCode::Success);
+      TrivialType loaded_data;
+      REQUIRE(BinarySchema::LoadObject(&byte_reader, schema, &loaded_data, allocator));
 
-        REQUIRE(saved_data.x == loaded_data.x);
-        REQUIRE(saved_data.y == loaded_data.y);
-        REQUIRE(saved_data.z == loaded_data.z);
-      }
+      REQUIRE(saved_data.x == loaded_data.x);
+      REQUIRE(saved_data.y == loaded_data.y);
+      REQUIRE(saved_data.z == loaded_data.z);
     }
     REQUIRE(allocator.num_bytes_allocated == 0);
   }
@@ -236,98 +210,89 @@ TEST_CASE("Round Trip Serialization/Deserialization", "[BinarySchema]")
   {
     ByteCountingAllocator allocator{};
     {
-      BinarySchema::SchemaBuilder builder{};
-      builder.Begin(allocator);
-      AddBasicScalarTypes(&builder);
-      TrivialType_Register(&builder);
-      ComplexTypeV1_Register(&builder);
-      const BinarySchema::SchemaBuilderEndToken end_token = builder.End();
-      const std::optional<BinarySchema::Schema> schema    = builder.Build(allocator, end_token);
+      BinarySchema::Builder builder{allocator};
 
-      REQUIRE(schema.has_value());
+      builder.AddType<ComplexTypeV1>();
 
-      if (schema)
+      const BinarySchema::Schema schema = builder.BuildSchema(allocator);
+
+      REQUIRE(schema.types != nullptr);
+
+      std::vector<byte, Memory::StlAllocator<byte>> serialized_object{allocator};
+      binaryIO::IOStream                            byte_writer = binaryIO::IOStream_FromVector(&serialized_object);
+
+      const int dynamic_array_size = 3;
+      const int heap_array_size    = 4;
+
+      TrivialType   trivial_ptr{1.0f, 2.0f, 3.0f};
+      ComplexTypeV1 saved_data;
+      saved_data.ptr            = &trivial_ptr;
+      saved_data.fixed_array[0] = {4.0f, 5.0f, 6.0f};
+      saved_data.fixed_array[1] = {7.0f, 8.0f, 9.0f};
+      saved_data.dynamic_array  = new TrivialType[dynamic_array_size]{
+       {10.0f, 13.0f, 16.0f},
+       {11.0f, 14.0f, 17.0f},
+       {12.0f, 16.0f, 18.0f},
+      };
+      saved_data.dynamic_array_size = dynamic_array_size;
+      saved_data.heap_array         = new TrivialType[heap_array_size]{
+       {20.0f, 30.0f, 40.0f},
+       {21.0f, 31.0f, 41.0f},
+       {22.0f, 32.0f, 42.0f},
+       {23.0f, 33.0f, 43.0f},
+      };
+
+      const BinarySchema::SchemaType* const complex_type = schema.FindType("ComplexType");
+
+      REQUIRE(complex_type != nullptr);
+
+      REQUIRE(BinarySchema::SaveObject(&byte_writer, *complex_type, &saved_data));
+
+      binaryIO::IOStream byte_reader = binaryIO::IOStream_FromROMemory(serialized_object.data(), serialized_object.size());
+      ComplexTypeV1      loaded_data;
+      std::memset(&loaded_data, 0x0, sizeof(loaded_data));
+
+      REQUIRE(BinarySchema::LoadObject(&byte_reader, *complex_type, &loaded_data, allocator));
+
+      REQUIRE(loaded_data.ptr != nullptr);
+      if (loaded_data.ptr)
       {
-        std::vector<byte, Memory::StlAllocator<byte>> serialized_object{allocator};
-        binaryIO::IOStream                            byte_writer = binaryIO::IOStream_FromVector(&serialized_object);
-
-        const int dynamic_array_size = 3;
-        const int heap_array_size    = 4;
-
-        TrivialType   trivial_ptr{1.0f, 2.0f, 3.0f};
-        ComplexTypeV1 saved_data;
-        saved_data.ptr            = &trivial_ptr;
-        saved_data.fixed_array[0] = {4.0f, 5.0f, 6.0f};
-        saved_data.fixed_array[1] = {7.0f, 8.0f, 9.0f};
-        saved_data.dynamic_array  = new TrivialType[dynamic_array_size]{
-         {10.0f, 13.0f, 16.0f},
-         {11.0f, 14.0f, 17.0f},
-         {12.0f, 16.0f, 18.0f},
-        };
-        saved_data.dynamic_array_size = dynamic_array_size;
-        saved_data.heap_array         = new TrivialType[heap_array_size]{
-         {20.0f, 30.0f, 40.0f},
-         {21.0f, 31.0f, 41.0f},
-         {22.0f, 32.0f, 42.0f},
-         {23.0f, 33.0f, 43.0f},
-        };
-
-        const BinarySchema::SchemaType* const complex_type = schema->FindType("ComplexType");
-
-        REQUIRE(complex_type != nullptr);
-
-        binaryIO::IOErrorCode io_result = BinarySchema::Write(&byte_writer, *complex_type, &saved_data, byte_order);
-
-        REQUIRE(io_result == binaryIO::IOErrorCode::Success);
-
-        binaryIO::IOStream byte_reader = binaryIO::IOStream_FromROMemory(serialized_object.data(), serialized_object.size());
-        ComplexTypeV1      loaded_data;
-        std::memset(&loaded_data, 0x0, sizeof(loaded_data));
-
-        io_result = BinarySchema::Read(&byte_reader, allocator, *complex_type, &loaded_data, byte_order);
-
-        REQUIRE(io_result == binaryIO::IOErrorCode::Success);
-
-        REQUIRE(loaded_data.ptr != nullptr);
-        if (loaded_data.ptr)
-        {
-          REQUIRE(loaded_data.ptr->x == saved_data.ptr->x);
-          REQUIRE(loaded_data.ptr->y == saved_data.ptr->y);
-          REQUIRE(loaded_data.ptr->z == saved_data.ptr->z);
-        }
-
-        for (int i = 0; i < 2; ++i)
-        {
-          REQUIRE(loaded_data.fixed_array[i].x == saved_data.fixed_array[i].x);
-          REQUIRE(loaded_data.fixed_array[i].y == saved_data.fixed_array[i].y);
-          REQUIRE(loaded_data.fixed_array[i].z == saved_data.fixed_array[i].z);
-        }
-
-        REQUIRE(loaded_data.dynamic_array != nullptr);
-        REQUIRE(loaded_data.dynamic_array_size == saved_data.dynamic_array_size);
-        if (loaded_data.dynamic_array != nullptr)
-        {
-          for (int i = 0; i < dynamic_array_size; ++i)
-          {
-            REQUIRE(loaded_data.dynamic_array[i].x == saved_data.dynamic_array[i].x);
-            REQUIRE(loaded_data.dynamic_array[i].y == saved_data.dynamic_array[i].y);
-            REQUIRE(loaded_data.dynamic_array[i].z == saved_data.dynamic_array[i].z);
-          }
-        }
-
-        REQUIRE(loaded_data.heap_array != nullptr);
-        for (int i = 0; i < heap_array_size; ++i)
-        {
-          REQUIRE(loaded_data.heap_array[i].x == saved_data.heap_array[i].x);
-          REQUIRE(loaded_data.heap_array[i].y == saved_data.heap_array[i].y);
-          REQUIRE(loaded_data.heap_array[i].z == saved_data.heap_array[i].z);
-        }
-
-        delete[] saved_data.dynamic_array;
-        delete[] saved_data.heap_array;
-
-        BinarySchema::FreeDynamicMemory(allocator, *schema, "ComplexType", &loaded_data);
+        REQUIRE(loaded_data.ptr->x == saved_data.ptr->x);
+        REQUIRE(loaded_data.ptr->y == saved_data.ptr->y);
+        REQUIRE(loaded_data.ptr->z == saved_data.ptr->z);
       }
+
+      for (int i = 0; i < 2; ++i)
+      {
+        REQUIRE(loaded_data.fixed_array[i].x == saved_data.fixed_array[i].x);
+        REQUIRE(loaded_data.fixed_array[i].y == saved_data.fixed_array[i].y);
+        REQUIRE(loaded_data.fixed_array[i].z == saved_data.fixed_array[i].z);
+      }
+
+      REQUIRE(loaded_data.dynamic_array != nullptr);
+      REQUIRE(loaded_data.dynamic_array_size == saved_data.dynamic_array_size);
+      if (loaded_data.dynamic_array != nullptr)
+      {
+        for (int i = 0; i < dynamic_array_size; ++i)
+        {
+          REQUIRE(loaded_data.dynamic_array[i].x == saved_data.dynamic_array[i].x);
+          REQUIRE(loaded_data.dynamic_array[i].y == saved_data.dynamic_array[i].y);
+          REQUIRE(loaded_data.dynamic_array[i].z == saved_data.dynamic_array[i].z);
+        }
+      }
+
+      REQUIRE(loaded_data.heap_array != nullptr);
+      for (int i = 0; i < heap_array_size; ++i)
+      {
+        REQUIRE(loaded_data.heap_array[i].x == saved_data.heap_array[i].x);
+        REQUIRE(loaded_data.heap_array[i].y == saved_data.heap_array[i].y);
+        REQUIRE(loaded_data.heap_array[i].z == saved_data.heap_array[i].z);
+      }
+
+      delete[] saved_data.dynamic_array.ptr;
+      delete[] saved_data.heap_array.ptr;
+
+      BinarySchema::FreeDynamicMemory(allocator, *schema.FindType("ComplexType"), &loaded_data);
     }
     REQUIRE(allocator.num_bytes_allocated == 0);
   }
@@ -335,144 +300,126 @@ TEST_CASE("Round Trip Serialization/Deserialization", "[BinarySchema]")
 
 TEST_CASE("Upgrade", "[BinarySchema]")
 {
-  constexpr BinarySchema::ByteOrder byte_order = BinarySchema::ByteOrder::LittleEndian;
-
   SECTION("Complex Type")
   {
     ByteCountingAllocator allocator{};
     {
-      const std::optional<BinarySchema::Schema> schema_v1 = [&]() {
-        BinarySchema::SchemaBuilder builder{};
-        builder.Begin(allocator);
-        AddBasicScalarTypes(&builder);
-        TrivialType_Register(&builder);
-        ComplexTypeV1_Register(&builder);
-        const BinarySchema::SchemaBuilderEndToken end_token = builder.End();
+      const BinarySchema::Schema schema_v1 = [&]() {
+        BinarySchema::Builder builder{allocator};
 
-        return builder.Build(allocator, end_token);
+        builder.AddType<ComplexTypeV1>();
+
+        return builder.BuildSchema(allocator);
       }();
 
-      const std::optional<BinarySchema::Schema> schema_v2 = [&]() {
-        BinarySchema::SchemaBuilder builder{};
-        builder.Begin(allocator);
-        AddBasicScalarTypes(&builder);
-        TrivialType_Register(&builder);
-        ComplexTypeV2_Register(&builder);
-        const BinarySchema::SchemaBuilderEndToken end_token = builder.End();
+      const BinarySchema::Schema schema_v2 = [&]() {
+        BinarySchema::Builder builder{allocator};
 
-        return builder.Build(allocator, end_token);
+        builder.AddType<ComplexTypeV2>();
+
+        return builder.BuildSchema(allocator);
       }();
 
-      REQUIRE(schema_v1.has_value());
-      REQUIRE(schema_v2.has_value());
+      const BinarySchema::SchemaType* const complex_type_v1 = schema_v1.FindType("ComplexType");
+      const BinarySchema::SchemaType* const complex_type_v2 = schema_v2.FindType("ComplexType");
 
-      if (schema_v1 && schema_v2)
+      REQUIRE(complex_type_v1 != nullptr);
+      REQUIRE(complex_type_v2 != nullptr);
+
+      std::vector<byte, Memory::StlAllocator<byte>> serialized_object{allocator};
+      binaryIO::IOStream                            byte_writer = binaryIO::IOStream_FromVector(&serialized_object);
+
+      const int dynamic_array_size  = 3;
+      const int old_heap_array_size = 4;
+      const int new_heap_array_size = 8;
+
+      TrivialType   trivial_ptr{1.0f, 2.0f, 3.0f};
+      ComplexTypeV1 saved_data;
+      saved_data.ptr            = &trivial_ptr;
+      saved_data.fixed_array[0] = {4.0f, 5.0f, 6.0f};
+      saved_data.fixed_array[1] = {7.0f, 8.0f, 9.0f};
+      saved_data.dynamic_array  = new TrivialType[dynamic_array_size]{
+       {10.0f, 13.0f, 16.0f},
+       {11.0f, 14.0f, 17.0f},
+       {12.0f, 16.0f, 18.0f},
+      };
+      saved_data.dynamic_array_size = dynamic_array_size;
+      saved_data.heap_array         = new TrivialType[old_heap_array_size]{
+       {20.0f, 30.0f, 40.0f},
+       {21.0f, 31.0f, 41.0f},
+       {22.0f, 32.0f, 42.0f},
+       {23.0f, 33.0f, 43.0f},
+      };
+
+      REQUIRE(BinarySchema::SaveObject(&byte_writer, *complex_type_v1, &saved_data));
+
+      binaryIO::IOStream byte_reader = binaryIO::IOStream_FromROMemory(serialized_object.data(), serialized_object.size());
+      ComplexTypeV2      loaded_data;
+      std::memset(&loaded_data, 0x0, sizeof(loaded_data));
+      loaded_data.new_member = 5.5f;
+
+      REQUIRE(BinarySchema::UpgradeObject(&byte_reader, *complex_type_v2, &loaded_data, *complex_type_v1, allocator));
+
+      REQUIRE(loaded_data.ptr != nullptr);
+      if (loaded_data.ptr)
       {
-        const BinarySchema::SchemaType* const complex_type_v1 = schema_v1->FindType("ComplexType");
-        const BinarySchema::SchemaType* const complex_type_v2 = schema_v2->FindType("ComplexType");
-
-        REQUIRE(complex_type_v1 != nullptr);
-        REQUIRE(complex_type_v2 != nullptr);
-
-        std::vector<byte, Memory::StlAllocator<byte>> serialized_object{allocator};
-        binaryIO::IOStream                            byte_writer = binaryIO::IOStream_FromVector(&serialized_object);
-
-        const int dynamic_array_size  = 3;
-        const int old_heap_array_size = 4;
-        const int new_heap_array_size = 8;
-
-        TrivialType   trivial_ptr{1.0f, 2.0f, 3.0f};
-        ComplexTypeV1 saved_data;
-        saved_data.ptr            = &trivial_ptr;
-        saved_data.fixed_array[0] = {4.0f, 5.0f, 6.0f};
-        saved_data.fixed_array[1] = {7.0f, 8.0f, 9.0f};
-        saved_data.dynamic_array  = new TrivialType[dynamic_array_size]{
-         {10.0f, 13.0f, 16.0f},
-         {11.0f, 14.0f, 17.0f},
-         {12.0f, 16.0f, 18.0f},
-        };
-        saved_data.dynamic_array_size = dynamic_array_size;
-        saved_data.heap_array         = new TrivialType[old_heap_array_size]{
-         {20.0f, 30.0f, 40.0f},
-         {21.0f, 31.0f, 41.0f},
-         {22.0f, 32.0f, 42.0f},
-         {23.0f, 33.0f, 43.0f},
-        };
-
-        binaryIO::IOErrorCode io_result = BinarySchema::Write(&byte_writer, *complex_type_v1, &saved_data, byte_order);
-
-        REQUIRE(io_result == binaryIO::IOErrorCode::Success);
-
-        binaryIO::IOStream byte_reader = binaryIO::IOStream_FromROMemory(serialized_object.data(), serialized_object.size());
-        ComplexTypeV2      loaded_data;
-        std::memset(&loaded_data, 0x0, sizeof(loaded_data));
-        loaded_data.new_member = 5.5f;
-
-        io_result = BinarySchema::Upgrade(&byte_reader, allocator, *complex_type_v1, *complex_type_v2, &loaded_data, byte_order);
-
-        REQUIRE(io_result == binaryIO::IOErrorCode::Success);
-
-        REQUIRE(loaded_data.ptr != nullptr);
-        if (loaded_data.ptr)
-        {
-          REQUIRE(loaded_data.ptr->x == saved_data.ptr->x);
-          REQUIRE(loaded_data.ptr->y == saved_data.ptr->y);
-          REQUIRE(loaded_data.ptr->z == saved_data.ptr->z);
-        }
-
-        REQUIRE(loaded_data.fixed_array_size == 2);
-        for (int i = 0; i < 2; ++i)
-        {
-          REQUIRE(loaded_data.fixed_array[i].x == saved_data.fixed_array[i].x);
-          REQUIRE(loaded_data.fixed_array[i].y == saved_data.fixed_array[i].y);
-          REQUIRE(loaded_data.fixed_array[i].z == saved_data.fixed_array[i].z);
-        }
-
-        REQUIRE(loaded_data.dynamic_array != nullptr);
-        REQUIRE(loaded_data.dynamic_array_size == saved_data.dynamic_array_size);
-        if (loaded_data.dynamic_array != nullptr)
-        {
-          for (int i = 0; i < dynamic_array_size; ++i)
-          {
-            REQUIRE(loaded_data.dynamic_array[i].x == saved_data.dynamic_array[i].x);
-            REQUIRE(loaded_data.dynamic_array[i].y == saved_data.dynamic_array[i].y);
-            REQUIRE(loaded_data.dynamic_array[i].z == saved_data.dynamic_array[i].z);
-          }
-        }
-
-        REQUIRE(loaded_data.heap_array != nullptr);
-        for (int i = 0; i < old_heap_array_size; ++i)
-        {
-          REQUIRE(loaded_data.heap_array[i].x == saved_data.heap_array[i].x);
-          REQUIRE(loaded_data.heap_array[i].y == saved_data.heap_array[i].y);
-          REQUIRE(loaded_data.heap_array[i].z == saved_data.heap_array[i].z);
-        }
-
-        constexpr uint32_t uninitialized_byte_pattern = (Memory::AllocatedBytePattern << 0u) |
-                                                        (Memory::AllocatedBytePattern << 8u) |
-                                                        (Memory::AllocatedBytePattern << 16u) |
-                                                        (Memory::AllocatedBytePattern << 24u);
-
-        float uninitialized_float;
-
-        static_assert(sizeof(uninitialized_byte_pattern) == sizeof(uninitialized_float), "");
-
-        memcpy(&uninitialized_float, &uninitialized_byte_pattern, sizeof(uninitialized_byte_pattern));
-
-        for (int i = old_heap_array_size; i < new_heap_array_size; ++i)
-        {
-          REQUIRE(loaded_data.heap_array[i].x == uninitialized_float);
-          REQUIRE(loaded_data.heap_array[i].y == uninitialized_float);
-          REQUIRE(loaded_data.heap_array[i].z == uninitialized_float);
-        }
-
-        REQUIRE(loaded_data.new_member == 5.5f);
-
-        delete[] saved_data.dynamic_array;
-        delete[] saved_data.heap_array;
-
-        BinarySchema::FreeDynamicMemory(allocator, *complex_type_v2, &loaded_data);
+        REQUIRE(loaded_data.ptr->x == saved_data.ptr->x);
+        REQUIRE(loaded_data.ptr->y == saved_data.ptr->y);
+        REQUIRE(loaded_data.ptr->z == saved_data.ptr->z);
       }
+
+      REQUIRE(loaded_data.fixed_array_size == 2);
+      for (int i = 0; i < 2; ++i)
+      {
+        REQUIRE(loaded_data.fixed_array[i].x == saved_data.fixed_array[i].x);
+        REQUIRE(loaded_data.fixed_array[i].y == saved_data.fixed_array[i].y);
+        REQUIRE(loaded_data.fixed_array[i].z == saved_data.fixed_array[i].z);
+      }
+
+      REQUIRE(loaded_data.dynamic_array != nullptr);
+      REQUIRE(loaded_data.dynamic_array_size == saved_data.dynamic_array_size);
+      if (loaded_data.dynamic_array != nullptr)
+      {
+        for (int i = 0; i < dynamic_array_size; ++i)
+        {
+          REQUIRE(loaded_data.dynamic_array[i].x == saved_data.dynamic_array[i].x);
+          REQUIRE(loaded_data.dynamic_array[i].y == saved_data.dynamic_array[i].y);
+          REQUIRE(loaded_data.dynamic_array[i].z == saved_data.dynamic_array[i].z);
+        }
+      }
+
+      REQUIRE(loaded_data.heap_array != nullptr);
+      for (int i = 0; i < old_heap_array_size; ++i)
+      {
+        REQUIRE(loaded_data.heap_array[i].x == saved_data.heap_array[i].x);
+        REQUIRE(loaded_data.heap_array[i].y == saved_data.heap_array[i].y);
+        REQUIRE(loaded_data.heap_array[i].z == saved_data.heap_array[i].z);
+      }
+
+      constexpr uint32_t uninitialized_byte_pattern = (Memory::AllocatedBytePattern << 0u) |
+                                                      (Memory::AllocatedBytePattern << 8u) |
+                                                      (Memory::AllocatedBytePattern << 16u) |
+                                                      (Memory::AllocatedBytePattern << 24u);
+
+      float uninitialized_float;
+
+      static_assert(sizeof(uninitialized_byte_pattern) == sizeof(uninitialized_float), "");
+
+      memcpy(&uninitialized_float, &uninitialized_byte_pattern, sizeof(uninitialized_byte_pattern));
+
+      for (int i = old_heap_array_size; i < new_heap_array_size; ++i)
+      {
+        REQUIRE(loaded_data.heap_array[i].x == uninitialized_float);
+        REQUIRE(loaded_data.heap_array[i].y == uninitialized_float);
+        REQUIRE(loaded_data.heap_array[i].z == uninitialized_float);
+      }
+
+      REQUIRE(loaded_data.new_member == 5.5f);
+
+      delete[] saved_data.dynamic_array.ptr;
+      delete[] saved_data.heap_array.ptr;
+
+      BinarySchema::FreeDynamicMemory(allocator, *complex_type_v2, &loaded_data);
     }
     REQUIRE(allocator.num_bytes_allocated == 0);
   }

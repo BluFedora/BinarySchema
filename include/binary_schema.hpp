@@ -204,13 +204,19 @@ namespace BinarySchema
   bool LoadSchema(binaryIO::IOStream* const stream, Schema* const schema, IPolymorphicAllocator& allocator);
   bool LoadObject(binaryIO::IOStream* const stream, const SchemaType& type, void* const data, IPolymorphicAllocator& allocator);
 
+  template<typename T>
+  bool LoadObject(binaryIO::IOStream* const stream, const Schema& schema, T* const data, IPolymorphicAllocator& allocator)
+  {
+    return LoadObject(stream, *schema.FindType<T>(), data, allocator);
+  }
+
   // Memory -> Memory: Convert from in memory to in memory across schemas.
 
   void ConvertObject(const void* const src_struct, const SchemaType& src_type, void* const dst_struct, const SchemaType& dst_type, IPolymorphicAllocator& dst_memory);
 
   // Combined LoadObject + Convert optimized for the case when the src_type and dst_type types are the same.
 
-  bool UpgradeObject(binaryIO::IOStream* const stream, const SchemaType& dst_type, void* const dst_struct, IPolymorphicAllocator& allocator, const SchemaType& src_type);
+  bool UpgradeObject(binaryIO::IOStream* const stream, const SchemaType& dst_type, void* const dst_struct, const SchemaType& src_type, IPolymorphicAllocator& allocator);
 
   // Frees any memory dynamically allocated from either a Read, Convert or Upgrade.
 
@@ -227,11 +233,15 @@ namespace BinarySchema
     }
 
     T& operator[](const std::size_t index) const { return ptr[index]; }
+
+    inline bool operator==(const std::nullptr_t) const { return ptr == nullptr; }
+    inline bool operator!=(const std::nullptr_t) const { return ptr != nullptr; }
   };
 
   template<typename T, std::size_t N>
   struct FixedArray : public DynArray<T>
   {
+    using DynArray<T>::DynArray;
   };
 
 #pragma region Builders
@@ -306,6 +316,7 @@ namespace BinarySchema
     build_internal::MemberList       member_list;
     build_internal::QualifierList    qualifier_list;
     build_internal::TypeBuilder*     current_type;
+    build_internal::TypeBuilder*     types_to_build;
 
     Builder(const AllocatorView allocator);
     ~Builder();
@@ -319,7 +330,7 @@ namespace BinarySchema
     template<typename ClassType, typename T, typename LengthType>
     void AddMember(const BuilderName member_name, DynArray<T> ClassType::* member_ptr, LengthType ClassType::* length_ptr);
 
-    Schema BuildSchema(IPolymorphicAllocator& allocator) const;
+    Schema BuildSchema(IPolymorphicAllocator& allocator);
 
     Builder(const Builder& rhs)            = delete;
     Builder(Builder&& rhs)                 = delete;
@@ -328,7 +339,7 @@ namespace BinarySchema
 
     static void SetBaseType(build_internal::MemberBuilder& member, const build_internal::TypeBuilder* const type);
 
-   private:
+   public:
     build_internal::TypeBuilder*   AddType_Internal(const BuilderName name, const SchemaTypeFlags flags, const std::size_t size, const std::size_t alignment, void (*Builder)(Builder& ctx));
     void                           AddQualifier_Internal(build_internal::MemberBuilder& member, TypeConstructorFlags flags_part, std::uint32_t size_part);
     build_internal::MemberBuilder& AddMember_Internal(const BuilderName name, const SizeType byte_offset);
@@ -361,7 +372,7 @@ namespace BinarySchema
 
       constexpr DynamicSize signedness = std::is_signed_v<T> ? DynamicSize::Signed : DynamicSize::Unsigned;
 
-      return static_cast<DynamicSize>(std::uint32_t(size_class) | std::uint32_t(signedness) | offset);
+      return static_cast<DynamicSize>(std::uint32_t(size_class) | std::uint32_t(signedness) | (offset << std::uint32_t(DynamicSize::OffsetShift)));
     }
   };
 
@@ -464,7 +475,7 @@ namespace BinarySchema
   {
     build_internal::MemberBuilder& member_builder = AddMember_Internal(member_name, static_cast<SizeType>(emit_internal::offset_of(member_ptr)));
 
-    const DynamicSize dynamic_size = MakeDynamicSize<LengthType>(static_cast<std::uint32_t>(emit_internal::offset_of(member_ptr)));
+    const DynamicSize dynamic_size = MakeDynamicSize<LengthType>(static_cast<std::uint32_t>(emit_internal::offset_of(length_ptr)));
 
     AddQualifier_Internal(member_builder, TypeConstructorFlags::DynamicArray, static_cast<std::uint32_t>(dynamic_size));
     Emit_MemberBuilder<emit_internal::StripType<T>>::Emit(*this, member_builder);
@@ -477,12 +488,14 @@ namespace BinarySchema
   }
 }
 
-#define BinarySchema_Type(T)                                                   \
-  template<>                                                                   \
-  inline constexpr BinarySchema::BuilderName BinarySchema::TypeName<T> = {#T}; \
-                                                                               \
-  template<>                                                                   \
+#define BinarySchema_TypeAlias(T, name)                                           \
+  template<>                                                                      \
+  inline constexpr BinarySchema::BuilderName BinarySchema::TypeName<T> = {#name}; \
+                                                                                  \
+  template<>                                                                      \
   inline void BinarySchema::DeclareMembers<T>(BinarySchema::Builder & ctx)
+
+#define BinarySchema_Type(T) BinarySchema_TypeAlias(T, T)
 
 BinarySchema_Type(bool) {}
 BinarySchema_Type(char) {}

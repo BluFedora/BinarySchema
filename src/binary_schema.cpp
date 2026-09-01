@@ -94,24 +94,14 @@ namespace BinarySchema
 
   inline static bool ByteCodeIsConvertCompatible(const TypeByteCode* const src, const std::uint32_t num_src_bytes, const TypeByteCode* const dst, const std::uint32_t num_dst_bytes)
   {
+    // This is checking to see if the bytecodes have the same level of indirections.
+
     std::uint32_t src_byte_code_index = 0u;
     std::uint32_t dst_byte_code_index = 0u;
     while (src_byte_code_index < num_src_bytes && dst_byte_code_index < num_dst_bytes)
     {
       const TypeConstructorFlags src_flags = static_cast<TypeConstructorFlags>(src[src_byte_code_index++]);
       const TypeConstructorFlags dst_flags = static_cast<TypeConstructorFlags>(dst[dst_byte_code_index++]);
-
-      if (ByteCodeIsDynamicallySized(src_flags) && ByteCodeIsDynamicallySized(dst_flags))
-      {
-        DynamicSize src_hash_str, dst_hash_str;
-        std::memcpy(&src_hash_str, src + src_byte_code_index, sizeof(src_hash_str));
-        std::memcpy(&dst_hash_str, dst + dst_byte_code_index, sizeof(dst_hash_str));
-
-        if (src_hash_str != dst_hash_str)
-        {
-          return false;
-        }
-      }
 
       src_byte_code_index += sizeof(std::uint32_t) * !ByteCodeHasSmallSize(src_flags);
       dst_byte_code_index += sizeof(std::uint32_t) * !ByteCodeHasSmallSize(dst_flags);
@@ -258,14 +248,6 @@ namespace BinarySchema
   // Schema API
   //
 
-  bool operator==(const SchemaType& lhs, const SchemaType& rhs)
-  {
-    return lhs.m_Size == rhs.m_Size &&
-           lhs.m_Alignment == rhs.m_Alignment &&
-           lhs.m_Flags == rhs.m_Flags &&
-           std::memcmp(lhs.m_Members.begin(), rhs.m_Members.begin(), lhs.m_Members.num_elements) == 0;
-  }
-
   static inline bool operator==(const StructureMember& lhs, const StructureMember& rhs)
   {
     return lhs.offset == rhs.offset &&
@@ -274,13 +256,21 @@ namespace BinarySchema
            std::memcmp(lhs.type_ctors.begin(), rhs.type_ctors.begin(), lhs.type_ctors.num_elements) == 0;
   }
 
+  bool operator==(const SchemaType& lhs, const SchemaType& rhs)
+  {
+    return lhs.m_Size == rhs.m_Size &&
+           lhs.m_Alignment == rhs.m_Alignment &&
+           lhs.m_Flags == rhs.m_Flags &&
+           std::equal(lhs.m_Members.begin(), lhs.m_Members.end(), rhs.m_Members.begin(), rhs.m_Members.end());
+  }
+
   bool StructureMember::IsConvertCompatibleWith(const StructureMember& rhs) const noexcept
   {
-    return base_type == rhs.base_type && ByteCodeIsConvertCompatible(
-                                          type_ctors.begin(),
-                                          type_ctors.num_elements,
-                                          rhs.type_ctors.begin(),
-                                          rhs.type_ctors.num_elements);
+    return *base_type == *rhs.base_type && ByteCodeIsConvertCompatible(
+                                            type_ctors.begin(),
+                                            type_ctors.num_elements,
+                                            rhs.type_ctors.begin(),
+                                            rhs.type_ctors.num_elements);
   }
 
   const StructureMember* SchemaType::FindMember(const HashStr32 name) const
@@ -861,6 +851,8 @@ struct BinarySchema::build_internal::TypeBuilder
   std::uint16_t   alignment;
   std::uint32_t   member_offset;
   std::uint32_t   member_count;
+  TypeBuilder*    next;
+  void (*Builder)(Builder& ctx);
 };
 static_assert(std::is_trivially_destructible_v<BinarySchema::build_internal::TypeBuilder>, "Destructor is not called.");
 
@@ -1184,7 +1176,8 @@ BinarySchema::Builder::Builder(const AllocatorView allocator) :
   type_list{},
   member_list{},
   qualifier_list{},
-  current_type{nullptr}
+  current_type{nullptr},
+  types_to_build{nullptr}
 {
 }
 
@@ -1213,9 +1206,21 @@ static void ZeroPaddingBetweenPtrs(void* const (&ptrs)[N])
   }
 }
 
-BinarySchema::Schema BinarySchema::Builder::BuildSchema(IPolymorphicAllocator& allocator) const
+BinarySchema::Schema BinarySchema::Builder::BuildSchema(IPolymorphicAllocator& allocator)
 {
-  constexpr bool KeepDebugStringData = false;
+  while (types_to_build != nullptr)
+  {
+    BinarySchema::build_internal::TypeBuilder* const type_to_build = std::exchange(types_to_build, types_to_build->next);
+    {
+      type_to_build->member_offset = std::uint32_t(member_list.size);
+
+      this->current_type = type_to_build;
+      type_to_build->Builder(*this);
+      this->current_type = nullptr;
+    }
+  }
+
+  constexpr bool KeepDebugStringData = true;
 
   std::uint32_t string_table_length = 0u;
 
@@ -1245,7 +1250,7 @@ BinarySchema::Schema BinarySchema::Builder::BuildSchema(IPolymorphicAllocator& a
   schema.data_size           = data_size_align.size;
   schema.num_types           = std::uint32_t(type_list.size);
   schema.num_members         = std::uint32_t(member_list.size);
-  schema.num_qualifiers      = std::uint32_t(type_list.size);
+  schema.num_qualifiers      = std::uint32_t(qualifier_list.size);
   schema.string_table_length = string_table_length;
   schema.types               = bfMemMakeSharedAliasArray(raw_bytes, reinterpret_cast<SchemaType*>(raw_bytes.get()));
 
@@ -1362,16 +1367,15 @@ BinarySchema::build_internal::TypeBuilder* BinarySchema::Builder::AddType_Intern
     new_type->flags         = flags;
     new_type->size          = static_cast<SizeType>(size);
     new_type->alignment     = static_cast<std::uint16_t>(alignment);
-    new_type->member_offset = std::uint32_t(member_list.size);
+    new_type->member_offset = 0u;
     new_type->member_count  = 0u;
+    new_type->next          = nullptr;
+    new_type->Builder       = Builder;
 
     *existing_type = new_type;
 
-    BinarySchema::build_internal::TypeBuilder* const prev_type = std::exchange(current_type, new_type);
-    {
-      Builder(*this);
-    }
-    current_type = prev_type;
+    new_type->next = types_to_build;
+    types_to_build = new_type;
   }
 
   return *existing_type;
@@ -1430,7 +1434,7 @@ void BinarySchema::ConvertObject(const void* const src_struct, const SchemaType&
   return ConvertInternal::ConvertUnqualifiedType(dst_memory, src_struct, dst_struct, src_type, dst_type);
 }
 
-bool BinarySchema::UpgradeObject(binaryIO::IOStream* const stream, const SchemaType& dst_type, void* const dst_struct, IPolymorphicAllocator& allocator, const SchemaType& src_type)
+bool BinarySchema::UpgradeObject(binaryIO::IOStream* const stream, const SchemaType& dst_type, void* const dst_struct, const SchemaType& src_type, IPolymorphicAllocator& allocator)
 {
   if (src_type == dst_type)
   {
