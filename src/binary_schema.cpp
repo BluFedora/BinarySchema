@@ -1028,7 +1028,7 @@ namespace
         {
           const std::size_t new_capacity = tail_chunk != nullptr ? tail_chunk->capacity * 2 : 8;
 
-          MemoryRequirements size_align{};
+          SizeAlign size_align{};
           size_align.Append<BinarySchema::build_internal::TempListChunk>();
           const MemoryIndex data_offset = size_align.Append(sizeof(T), new_capacity, alignof(T));
 
@@ -1092,7 +1092,7 @@ namespace
       {
         BinarySchema::build_internal::TempListChunk* const chunk_next = chunk->next;
 
-        MemoryRequirements size_align{};
+        SizeAlign size_align{};
         size_align.Append<BinarySchema::build_internal::TempListChunk>();
         size_align.Append(element_size, chunk->capacity, element_align);
 
@@ -1235,7 +1235,7 @@ BinarySchema::Schema BinarySchema::Builder::BuildSchema(IPolymorphicAllocator& a
     });
   }
 
-  MemoryRequirements data_size_align{};
+  SizeAlign data_size_align{};
   {
     data_size_align.Append<SchemaType>(type_list.size);
     data_size_align.Append<StructureMember>(member_list.size);
@@ -1266,10 +1266,10 @@ BinarySchema::Schema BinarySchema::Builder::BuildSchema(IPolymorphicAllocator& a
       // Allocations
 
       const void* const      memory_end = bytes_current + data_size_align.size;
-      SchemaType* const      types      = MemoryRequirements::Alloc<SchemaType>(&bytes_current, memory_end, schema.num_types);
-      StructureMember* const members    = MemoryRequirements::Alloc<StructureMember>(&bytes_current, memory_end, schema.num_members);
-      TypeByteCode* const    qualifiers = MemoryRequirements::Alloc<TypeByteCode>(&bytes_current, memory_end, schema.num_qualifiers);
-      char* const            strings    = MemoryRequirements::Alloc<char>(&bytes_current, memory_end, schema.string_table_length);
+      SchemaType* const      types      = SizeAlign::Alloc<SchemaType>(&bytes_current, memory_end, schema.num_types);
+      StructureMember* const members    = SizeAlign::Alloc<StructureMember>(&bytes_current, memory_end, schema.num_members);
+      TypeByteCode* const    qualifiers = SizeAlign::Alloc<TypeByteCode>(&bytes_current, memory_end, schema.num_qualifiers);
+      char* const            strings    = SizeAlign::Alloc<char>(&bytes_current, memory_end, schema.string_table_length);
 
       auto CopyName = [&, write_offset = std::uint32_t(0)](const BuilderName& name) mutable -> StrName {
         StrName result = {name.hash_str.hash, nullptr};

@@ -20,7 +20,7 @@
 #include "binaryio/binary_types.hpp"
 #include "binaryio/rel_ptr.hpp"  // rel_ptr32, rel_array32
 
-#include "memory/basic_types.hpp"    // byte, IPolymorphicAllocator, MemoryRequirements
+#include "memory/basic_types.hpp"    // byte, IPolymorphicAllocator, SizeAlign
 #include "memory/smart_pointer.hpp"  // SharedPtr<T>
 
 #include <optional>     // optional
